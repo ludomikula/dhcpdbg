@@ -25,6 +25,10 @@ SOLICIT the next.
   - [Custom dictionaries](#custom-dictionaries)
     - [Mapping DHCPv4 option 43 to a custom dictionary](#mapping-dhcpv4-option-43-to-a-custom-dictionary)
 - [Inspecting the dictionary](#inspecting-the-dictionary)
+- [Replaying captures with --replay-pcap](#replaying-captures-with---replay-pcap)
+  - [Filter expressions](#filter-expressions)
+  - [Timestamp formats](#timestamp-formats)
+  - [JSON output](#json-output)
 - [Output format](#output-format)
 - [Exit codes](#exit-codes)
 - [Examples](#examples)
@@ -170,6 +174,9 @@ dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
         [--decode-option-43 VENDOR]
 dhcpdbg (-4|-6) (--list-dicts | --print-dict [--vendor NAME ...])
         [--dict PATH ...] [--dict-replace] [--format text|json]
+dhcpdbg --replay-pcap PATH [-4|-6] [--dict PATH ...] [--dict-replace]
+        [--decode-option-43 VENDOR] [--format text|json]
+        [--timestamp local|utc|relative] [--filter KEY=VAL,...]
 ```
 
 | Flag | Meaning |
@@ -178,8 +185,8 @@ dhcpdbg (-4|-6) (--list-dicts | --print-dict [--vendor NAME ...])
 | `-t TYPE`          | Message type name (case-insensitive). Resolved against the dictionary's `Packet-Type` enum (`discover`, `solicit`, `request`, `renew`, `release`, `inform`, `decline`, `rebind`, `information-request`, ...). Ignored if the input file already sets `Packet-Type` or DHCPv4 `Message-Type`. |
 | `-s HOST[:PORT]`   | Target server. Defaults: `255.255.255.255:67` for DHCPv4, `[ff02::1:2]:547` for DHCPv6 (all-DHCP-relay-agents-and-servers). |
 | `-i IFACE`         | Egress interface. Required for `--socket=raw` and recommended for `--mode=listen`. For DHCPv6 it also selects the multicast egress interface. |
-| `--socket=udp|raw` | Socket backend. `udp` (default) uses a regular bound UDP socket. `raw` uses AF_PACKET DGRAM on Linux and lets you send from `0.0.0.0` before a lease exists. |
-| `--mode=request|listen` | `request` (default) sends a packet, waits for the matching reply, prints it, exits. `listen` binds and prints every DHCP packet observed on the socket until SIGINT. |
+| `--socket=udp\|raw` | Socket backend. `udp` (default) uses a regular bound UDP socket. `raw` uses AF_PACKET DGRAM on Linux and lets you send from `0.0.0.0` before a lease exists. |
+| `--mode=request\|listen` | `request` (default) sends a packet, waits for the matching reply, prints it, exits. `listen` binds and prints every DHCP packet observed on the socket until SIGINT. |
 | `-r RETRIES`       | Retries on reply timeout. Default `2`. |
 | `-T TIMEOUT`       | Reply timeout. Accepts Go duration syntax (`2s`, `500ms`, `1m30s`). Default `3s`. |
 | `-f FILE`          | Read the attribute list from `FILE`. Defaults to stdin. Ignored in listen mode. |
@@ -191,7 +198,10 @@ dhcpdbg (-4|-6) (--list-dicts | --print-dict [--vendor NAME ...])
 | `--list-dicts`     | Info mode: list every dictionary file that was parsed for the selected protocol, with source and per-file attribute count, then exit. See [Inspecting the dictionary](#inspecting-the-dictionary). |
 | `--print-dict`     | Info mode: pretty-print the loaded dictionary tree (top-level options, internal pseudo-attrs, vendor blocks), then exit. |
 | `--vendor NAME`    | Filter `--print-dict` to the named vendor block. Repeatable. Implies `--print-dict` when used on its own. |
-| `--format text\|json` | Output format for `--list-dicts` and `--print-dict`. Default `text`. JSON is stable and pipe-friendly (`dhcpdbg -4 --print-dict --format=json \| jq`). |
+| `--format text\|json` | Output format for `--list-dicts`, `--print-dict`, and `--replay-pcap`. Default `text`. JSON is stable and pipe-friendly. |
+| `--replay-pcap PATH` | Replay DHCP packets from a libpcap or pcapng capture and exit. `PATH` may be `-` to read from stdin (e.g. `tcpdump -w - ... \| dhcpdbg --replay-pcap -`). In replay mode `-4` / `-6` become optional filters. See [Replaying captures](#replaying-captures-with---replay-pcap). |
+| `--filter EXPR`    | Replay-mode filter: comma-separated `key=value` clauses, all AND'd. Reserved keys: `family`, `src`, `dst`, `msg-type`; any other key is treated as an attribute name. See [Filter expressions](#filter-expressions). |
+| `--timestamp FMT`  | Replay-mode text timestamp format: `local` (default), `utc`, or `relative`. See [Timestamp formats](#timestamp-formats). |
 | `-h`               | Show help. |
 
 ## Input format
@@ -611,6 +621,145 @@ debug-the-custom-dictionary loop:
 ```
 
 Same trio works for DHCPv6 — pass `-6` instead.
+
+## Replaying captures with --replay-pcap
+
+`--replay-pcap PATH` reads a packet capture, picks out the DHCP packets,
+runs them through the same wire-codec the request/listen modes use, and
+prints each one. The capture can be a libpcap file (`tcpdump -w x.pcap`)
+or a pcapng file (Wireshark default, modern tcpdump default) — the
+format is auto-detected from the first 4 bytes. `PATH` may be `-` to
+read from stdin, which makes the live-pipe form work:
+
+```sh
+# offline
+./dhcpdbg --replay-pcap /var/captures/dhcp.pcap
+
+# offline, only DHCPv4
+./dhcpdbg --replay-pcap /var/captures/dhcp.pcap -4
+
+# live, piped from tcpdump
+tcpdump -i eth0 -U -w - 'udp port 67 or udp port 547' \
+  | ./dhcpdbg --replay-pcap -
+
+# pcapng via Wireshark / tshark export
+./dhcpdbg --replay-pcap /tmp/wireshark.pcapng
+```
+
+Each packet renders as a `#`-prefixed comment line (timestamp, endpoints,
+family, original wire length) followed by the same FreeRADIUS attribute
+notation as `--mode=listen`:
+
+```
+# 2026-06-07 12:31:24.512871  10.0.0.1:68 → 255.255.255.255:67  (DHCPv4, 305 bytes)
+Opcode = Client-Message
+Hardware-Type = Ethernet
+Transaction-Id = 3735928559
+Client-Hardware-Address = 02:00:00:00:00:01
+Hostname = "lab-host"
+Message-Type = Discover
+
+# 2026-06-07 12:31:24.601128  10.0.0.1:67 → 255.255.255.255:68  (DHCPv4, 312 bytes)
+…
+```
+
+A few practical guarantees:
+
+- **Non-DHCP UDP** (anything off ports 67 / 68 / 546 / 547) is silently
+  skipped, so piping a noisy capture is harmless.
+- **Decode errors are always shown.** If a DHCP-port packet's payload
+  doesn't parse cleanly, the header still emits and the body is replaced
+  with `# decode failed: <reason>`. With `-xx` the raw payload bytes are
+  hex-dumped beneath. Truncated packets carry a `, truncated` tag in the
+  header line.
+- **Per-packet errors don't stop the stream.** A bad record (unsupported
+  link type for that frame, fragmented IP) is logged to stderr and
+  the reader moves on.
+- **Both link layers.** Ethernet (with one or two VLAN tags),
+  Linux SLL v1 (`-i any` on older kernels), Linux SLL v2 (`-i any` on
+  modern kernels), and `LINKTYPE_RAW` are all supported.
+- **IPv6 extension chain.** Hop-by-Hop, Routing, Destination-Options
+  and Fragment headers are walked through; non-trivial fragments are
+  refused with an explanatory error.
+
+### Filter expressions
+
+`--filter` takes a comma-separated list of `key=value` clauses. All
+clauses must hold (AND). Quote values that contain a comma or space.
+
+| Key | Matches against | Example |
+|-----|-----------------|---------|
+| `family`  | `v4` or `v6` (case-insensitive) | `--filter family=v4` |
+| `src`     | source `ip` or `ip:port`        | `--filter src=10.0.0.1` |
+| `dst`     | destination `ip` or `ip:port`   | `--filter dst=255.255.255.255:67` |
+| `msg-type` (also `message-type`, `msgtype`) | DHCPv4 `Message-Type` / DHCPv6 `Packet-Type` enum name (case-insensitive) or numeric value | `--filter msg-type=Discover` |
+| any attribute name | the attribute's formatted value (case-sensitive, exact match — both `Hostname=lab-host` and `Hostname="lab-host"` work) | `--filter 'Hostname=lab-host'` |
+
+Real-world combinations:
+
+```sh
+# Only DISCOVER packets
+./dhcpdbg --replay-pcap dhcp.pcap --filter 'msg-type=Discover'
+
+# Only packets from a specific relay
+./dhcpdbg --replay-pcap dhcp.pcap --filter 'src=192.0.2.5'
+
+# DHCPv6 SOLICIT from a known CPE
+./dhcpdbg --replay-pcap dhcp.pcap \
+          --filter 'family=v6,msg-type=Solicit,src=fe80::aabb:ccff:fedd:eeff'
+
+# Only packets carrying a known vendor-class identifier
+./dhcpdbg --replay-pcap dhcp.pcap \
+          --filter 'Vendor-Class-Identifier="udhcp 1.20"'
+```
+
+Attribute-name clauses scan every instance of the attribute in the
+decoded list (so a `Parameter-Request-List=Subnet-Mask` clause matches
+even when the request also asks for Router-Address etc.).
+
+### Timestamp formats
+
+`--timestamp` controls the leading column on text-mode output. JSON
+output is unaffected — it always emits RFC3339Nano UTC.
+
+| Value | Example |
+|-------|---------|
+| `local` (default) | `2026-06-07 12:31:24.512871` (local timezone) |
+| `utc`             | `2026-06-07T10:31:24.512871Z` |
+| `relative`        | `+0000.000000s`, `+0000.088257s`, ... (delta from the first packet) |
+
+`relative` is handy for sequencing — every packet is `+N.NNNNNNs` after
+the first one, so the time column doubles as inter-packet spacing.
+
+### JSON output
+
+`--format json` emits **newline-delimited JSON** — one packet per line,
+no surrounding array. Stable schema:
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `timestamp` | string | RFC3339Nano UTC, regardless of `--timestamp`. |
+| `src`, `dst` | string | `ip:port` strings (IPv4 and IPv6 both). |
+| `family`    | string | `"DHCPv4"` or `"DHCPv6"`. |
+| `caplen`    | int    | Captured-on-wire bytes (link-layer through DHCP). |
+| `origlen`   | int    | Original packet bytes — `>caplen` ⇒ truncated. |
+| `truncated` | bool   | Convenience: `caplen < origlen`. |
+| `message_type` | string | DHCPv4 `Message-Type` / DHCPv6 `Packet-Type` enum name when present. |
+| `pairs`     | object | Map of attribute name → value. Structured attributes use the same dotted keys WriteList prints (`IA-NA.IAID`, `Decoded-Option-43.Acme.Image-Path`). Arrays surface as JSON lists. |
+| `error`     | string | Only present when decoding failed. `pairs` is absent in that case. |
+
+Pipeline example:
+
+```sh
+# Show every Hostname offered to a particular MAC
+./dhcpdbg --replay-pcap dhcp.pcap --format json \
+  | jq -r 'select(.pairs["Client-Hardware-Address"] == "02:00:00:00:00:01")
+           | "\(.timestamp) \(.message_type) \(.pairs.Hostname // "-")"'
+
+# Count packets by message type
+./dhcpdbg --replay-pcap dhcp.pcap --format json \
+  | jq -r '.message_type' | sort | uniq -c | sort -rn
+```
 
 ## Output format
 

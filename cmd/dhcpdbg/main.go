@@ -38,7 +38,10 @@ func main() {
 		decOpt43    = flag.String("decode-option-43", "", "vendor name (under Decoded-Option-43) used to parse option 43 payloads")
 		listDicts   = flag.Bool("list-dicts", false, "list every loaded dictionary file and exit")
 		printDict   = flag.Bool("print-dict", false, "print the loaded dictionary tree and exit")
-		formatS     = flag.String("format", "text", "info output format: text|json")
+		formatS     = flag.String("format", "text", "output format for info / replay modes: text|json")
+		replayPcap  = flag.String("replay-pcap", "", "replay DHCP packets from a libpcap or pcapng capture (- for stdin)")
+		filterExpr  = flag.String("filter", "", "replay-mode filter: key=value[,key=value...] (see help for keys)")
+		timestampS  = flag.String("timestamp", "local", "replay-mode timestamp format: local|utc|relative")
 		showHelp    = flag.Bool("h", false, "show this help")
 	)
 	var dictPaths stringSlice
@@ -48,7 +51,9 @@ func main() {
 	flag.Usage = usage
 	flag.Parse()
 
-	if *showHelp || (!*v4 && !*v6) {
+	// In replay mode -4 / -6 are optional (filter only); every other
+	// mode still requires exactly one.
+	if *showHelp || (!*v4 && !*v6 && *replayPcap == "") {
 		usage()
 		if *showHelp {
 			os.Exit(0)
@@ -59,9 +64,15 @@ func main() {
 		fail("-4 and -6 are mutually exclusive")
 	}
 
-	family := cli.V4
-	if *v6 {
+	var family cli.Family
+	switch {
+	case *v4:
+		family = cli.V4
+	case *v6:
 		family = cli.V6
+	default:
+		// Replay-only path — Family stays zero, meaning "both families".
+		family = 0
 	}
 
 	// Info mode: --list-dicts and --print-dict both bypass the socket and
@@ -103,6 +114,62 @@ func main() {
 			InfoJSON:    asJSON,
 			DictPaths:   []string(dictPaths),
 			DictReplace: *dictReplace,
+		})
+		os.Exit(rc)
+	}
+
+	// Replay mode: --replay-pcap PATH (or - for stdin). Opens no socket,
+	// reads no input file; just pulls DHCP packets out of a capture and
+	// prints them through the wire codecs.
+	if *replayPcap != "" {
+		if *msgType != "" || *iface != "" || *server != "" || *inputPath != "" {
+			fail("--replay-pcap cannot be combined with -t/-i/-s/-f")
+		}
+		if *modeS != "request" {
+			fail("--replay-pcap cannot be combined with --mode=%s", *modeS)
+		}
+		var asJSON bool
+		switch *formatS {
+		case "text":
+			asJSON = false
+		case "json":
+			asJSON = true
+		default:
+			fail("unknown --format=%q (want text|json)", *formatS)
+		}
+		var ts cli.TimestampFormat
+		switch *timestampS {
+		case "local":
+			ts = cli.TimestampLocal
+		case "utc":
+			ts = cli.TimestampUTC
+		case "relative":
+			ts = cli.TimestampRelative
+		default:
+			fail("unknown --timestamp=%q (want local|utc|relative)", *timestampS)
+		}
+		filter, ferr := cli.ParseFilter(*filterExpr)
+		if ferr != nil {
+			fail("--filter: %v", ferr)
+		}
+		verbosity := 0
+		if *x {
+			verbosity = 1
+		}
+		if *xx {
+			verbosity = 2
+		}
+		rc := cli.Run(cli.Options{
+			Family:         family,
+			Mode:           cli.ModeReplayPcap,
+			PcapPath:       *replayPcap,
+			ReplayFilter:   filter,
+			Timestamp:      ts,
+			ReplayJSON:     asJSON,
+			DictPaths:      []string(dictPaths),
+			DictReplace:    *dictReplace,
+			DecodeOption43: *decOpt43,
+			Verbosity:      verbosity,
 		})
 		os.Exit(rc)
 	}
@@ -176,6 +243,9 @@ Usage:
           [--decode-option-43 VENDOR]
   dhcpdbg (-4|-6) (--list-dicts | --print-dict [--vendor NAME ...])
           [--dict PATH ...] [--dict-replace] [--format text|json]
+  dhcpdbg --replay-pcap PATH [-4|-6] [--dict PATH ...] [--dict-replace]
+          [--decode-option-43 VENDOR] [--format text|json]
+          [--timestamp local|utc|relative] [--filter KEY=VAL,...]
 
 Examples:
   dhcpdbg -4 -t discover -i eth0 --socket=raw -s 255.255.255.255 < attrs.txt
@@ -184,6 +254,9 @@ Examples:
   dhcpdbg -4 --list-dicts
   dhcpdbg -4 --print-dict --vendor=ADSL-Forum
   dhcpdbg -4 --print-dict --dict /etc/dhcpdbg/dictionary.acme --format=json
+  dhcpdbg --replay-pcap capture.pcap
+  tcpdump -i eth0 -w - 'udp port 67 or udp port 547' | dhcpdbg --replay-pcap -
+  dhcpdbg --replay-pcap capture.pcap --filter 'msg-type=Discover,src=10.0.0.1'
 
 Input format (one attribute per line, blank lines separate packets):
   Hostname = "lab-host"

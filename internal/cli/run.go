@@ -43,6 +43,19 @@ const (
 	// but does not open a socket — it just renders the dictionary tree
 	// through internal/info per the Info* fields below.
 	ModeInfo
+	// ModeReplayPcap reads a libpcap or pcapng capture, decodes each
+	// DHCP packet through the wire codecs, and prints them. No socket
+	// opened, no input file read.
+	ModeReplayPcap
+)
+
+// TimestampFormat picks how replay-mode timestamps render in text output.
+type TimestampFormat int
+
+const (
+	TimestampLocal    TimestampFormat = iota // 2026-06-07 12:31:24.512871 (local TZ)
+	TimestampUTC                             // 2026-06-07T10:31:24.512871Z
+	TimestampRelative                        // +0.000000s from the first packet
 )
 
 // InfoMode selects which info-mode rendering to run.
@@ -93,6 +106,20 @@ type Options struct {
 	// renderer is the default.
 	InfoJSON bool
 
+	// Replay-mode fields. PcapPath is the user-supplied file path
+	// ("" if PcapStream is set instead). PcapStream is io.Stdin when the
+	// flag value is "-", or any io.Reader supplied in-process.
+	PcapPath   string
+	PcapStream io.Reader
+	// ReplayFilter is an optional --filter expression. A zero filter
+	// matches every packet (the default).
+	ReplayFilter Filter
+	// Timestamp picks the text-mode timestamp format. JSON output always
+	// uses RFC3339Nano in UTC.
+	Timestamp TimestampFormat
+	// ReplayJSON switches replay output to newline-delimited JSON.
+	ReplayJSON bool
+
 	Stdout io.Writer
 	Stderr io.Writer
 }
@@ -105,6 +132,13 @@ func Run(opts Options) int {
 	}
 	if opts.Stderr == nil {
 		opts.Stderr = os.Stderr
+	}
+
+	// Replay mode handles its own protocol loading because it may need
+	// both DHCPv4 and DHCPv6 simultaneously (a capture often carries
+	// both families).
+	if opts.Mode == ModeReplayPcap {
+		return runReplayPcap(opts)
 	}
 
 	proto, err := loadProto(opts.Family, opts)
