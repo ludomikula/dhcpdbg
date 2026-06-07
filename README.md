@@ -24,6 +24,7 @@ SOLICIT the next.
 - [Input format](#input-format)
   - [Custom dictionaries](#custom-dictionaries)
     - [Mapping DHCPv4 option 43 to a custom dictionary](#mapping-dhcpv4-option-43-to-a-custom-dictionary)
+- [Inspecting the dictionary](#inspecting-the-dictionary)
 - [Output format](#output-format)
 - [Exit codes](#exit-codes)
 - [Examples](#examples)
@@ -167,6 +168,8 @@ dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
         [-r RETRIES] [-T TIMEOUT] [-f FILE] [-x | -xx]
         [--dict PATH ...] [--dict-replace]
         [--decode-option-43 VENDOR]
+dhcpdbg (-4|-6) (--list-dicts | --print-dict [--vendor NAME ...])
+        [--dict PATH ...] [--dict-replace] [--format text|json]
 ```
 
 | Flag | Meaning |
@@ -185,6 +188,10 @@ dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
 | `--dict PATH`      | Extra FreeRADIUS-syntax dictionary file or directory to layer on top of the embedded tree. Repeatable. See [Custom dictionaries](#custom-dictionaries). |
 | `--dict-replace`   | Skip loading the embedded FreeRADIUS dictionaries — only the `--dict` paths are used. The custom tree must then be self-contained. |
 | `--decode-option-43 VENDOR` | When decoding replies, parse DHCPv4 option 43 (Vendor-Specific-Information) as the named vendor block under `Decoded-Option-43`. Without this flag, option 43 stays opaque. See [Custom dictionaries](#custom-dictionaries). |
+| `--list-dicts`     | Info mode: list every dictionary file that was parsed for the selected protocol, with source and per-file attribute count, then exit. See [Inspecting the dictionary](#inspecting-the-dictionary). |
+| `--print-dict`     | Info mode: pretty-print the loaded dictionary tree (top-level options, internal pseudo-attrs, vendor blocks), then exit. |
+| `--vendor NAME`    | Filter `--print-dict` to the named vendor block. Repeatable. Implies `--print-dict` when used on its own. |
+| `--format text\|json` | Output format for `--list-dicts` and `--print-dict`. Default `text`. JSON is stable and pipe-friendly (`dhcpdbg -4 --print-dict --format=json \| jq`). |
 | `-h`               | Show help. |
 
 ## Input format
@@ -418,6 +425,192 @@ A few practical rules to keep in mind:
 - The hint must name a real child of `Decoded-Option-43` in the loaded
   protocol. An unknown vendor name silently falls through to opaque
   octets, so legacy traces still parse without changes.
+
+## Inspecting the dictionary
+
+`dhcpdbg` is self-documenting: the same dictionary tree the encoder /
+decoder reads is also what the user types into the input file, so being
+able to **dump** that tree directly is the fastest way to answer "is the
+attribute named `Foo-Bar`?", "what enum values does `Message-Type`
+accept?", "which file in the embedded set defines option 82's
+sub-options?", or — when you're working with `--dict` — "did my custom
+file actually get parsed?".
+
+Two info commands cover this. Both run without opening any socket and
+without reading the input file. Family selection (`-4` / `-6`) still
+applies, and `--dict` / `--dict-replace` work exactly as in request /
+listen mode — so you can inspect the *exact* tree your next request would
+use.
+
+### `--list-dicts` — load order and per-file attribute counts
+
+```sh
+./dhcpdbg -4 --list-dicts
+```
+
+```
+# DHCPv4 dictionary — 52 files
+
+LOAD ORDER  SOURCE    PATH                                   ATTRS
+1           embedded  dhcpv4/dictionary.freeradius.internal  21
+2           embedded  dhcpv4/dictionary.rfc2131              106
+3           embedded  dhcpv4/dictionary.rfc2241              3
+…
+51          embedded  dhcpv4/dictionary.cablelabs            5
+52          embedded  dhcpv4/dictionary.adsl_forum           15
+```
+
+Layer a custom file with `--dict` and watch it appear at the tail:
+
+```sh
+./dhcpdbg -4 --list-dicts --dict /etc/dhcpdbg/dictionary.acme
+```
+
+```
+LOAD ORDER  SOURCE                                   PATH                  ATTRS
+…
+52          embedded                                 dhcpv4/dictionary.adsl_forum  15
+53          custom:/etc/dhcpdbg/dictionary.acme      dictionary.acme       3
+```
+
+The `ATTRS` column comes from each attribute's `SourceFile` stamp — i.e.
+the totals are exact, not a per-source average. A custom file that
+contributes zero new attrs (for example, one that only overrides a
+`VALUE`) still gets a row, with `0` in the count.
+
+### `--print-dict` — friendly dump of the tree
+
+```sh
+./dhcpdbg -4 --print-dict | less
+```
+
+The output is broken into sections:
+
+```
+# DHCPv4 dictionary — 233 attributes, 5 vendor blocks, 52 files
+
+## Top-level options
+CODE  TYPE       NAME                              SOURCE
+  1   ipaddr     Subnet-Mask                       rfc2131
+  3   ipaddr     Router-Address [array]            rfc2131
+ 53   uint8      Message-Type                      rfc2131
+ 82   tlv        Relay-Agent-Information           rfc3046
+…
+
+### Message-Type (53)
+    VALUE  Discover          = 1
+    VALUE  Offer             = 2
+    VALUE  Request           = 3
+    VALUE  Ack               = 5
+    VALUE  NAK               = 6
+    …
+
+### Relay-Agent-Information (82)
+    SUB  1  string   Circuit-Id                          rfc3046
+    SUB  2  string   Remote-Id                           rfc3046
+    SUB  5  ipaddr   Link-Selection                      rfc3046
+    …
+
+## Internal pseudo-attributes
+…
+### Decoded-Option-43 (276)
+    SUB  1  tlv     Broadband-Forum  freeradius.internal
+        └─ Broadband-Forum (1):
+            SUB  1  string   ACS-URL                         freeradius.internal
+            SUB  2  string   Provisioning-Code               freeradius.internal
+            …
+
+## Vendors
+NAME        PEN    ATTRS  SOURCE
+ADSL-Forum  3561   14     adsl_forum
+CableLabs   4491   5      cablelabs
+…
+
+## Vendor: ADSL-Forum (PEN 3561) — 14 attributes  [adsl_forum]
+CODE  TYPE    NAME                            SOURCE
+ 1    octets  Manufacturer-OUI                adsl_forum
+ 2    octets  Device-Serial-Number            adsl_forum
+…
+```
+
+The flat tables list every attribute by code and type; the per-attribute
+`### Name (code)` Details blocks list everything that wouldn't fit in
+the table: VALUE enums, struct MEMBERs, TLV SUB children. Nested
+containers (`Decoded-Option-43 → Broadband-Forum → ACS-URL`) recurse
+under a `└─` connector so the parent-child relationship stays visible.
+
+### `--vendor` — filter to one or more vendor blocks
+
+```sh
+./dhcpdbg -4 --print-dict --vendor=ADSL-Forum
+```
+
+```
+## Vendor: ADSL-Forum (PEN 3561) — 14 attributes  [adsl_forum]
+CODE  TYPE    NAME                            SOURCE
+ 1    octets  Manufacturer-OUI                adsl_forum
+ …
+11    string  ACS-URL                         adsl_forum
+12    string  Provisioning-Code               adsl_forum
+13    string  CWMP-Retry-Minimum-Interval     adsl_forum
+14    string  CWMP-Retry-Interval-Multiplier  adsl_forum
+21    octets  Tunnel-Type                     adsl_forum
+…
+```
+
+Repeat `--vendor=…` to stack several vendors in one dump. An unknown
+vendor name fails fast with the list of vendors that *are* loaded — handy
+when you're searching for the right spelling after `--dict`. The flag
+implies `--print-dict`, so `--vendor=X` on its own is enough.
+
+### `--format=json` — machine-friendly output
+
+Either info command emits a stable JSON tree with `--format=json`. The
+shape is fixed so shell pipelines stay robust:
+
+```sh
+./dhcpdbg -4 --list-dicts --format=json | jq '.files | length'
+# 52
+
+./dhcpdbg -4 --print-dict --vendor=ADSL-Forum --format=json \
+  | jq '.vendors[0].attributes[] | "\(.code): \(.name)"'
+```
+
+Top-level fields:
+
+| Field | Where it appears | Meaning |
+|-------|------------------|---------|
+| `protocol`, `protocol_code` | both | `"DHCPv4"`, `2` (or `"DHCPv6"`, `3`). |
+| `files[]` | `--list-dicts` | One entry per parsed file with `load_order`, `source`, `path`, `attrs`. |
+| `top_level_attributes[]` | `--print-dict` (no `--vendor`) | Every non-internal, non-vendor attribute with `code`, `name`, `type`, `enum`, `members`, `children`. |
+| `internal_attributes[]` | `--print-dict` (no `--vendor`) | BOOTP-header pseudo-attrs and `Decoded-Option-43`. |
+| `vendors[]` | both `--print-dict` forms | One entry per vendor block, with `name`, `pen`, `source`, `source_file`, and `attributes[]`. |
+
+Each attribute carries `source` (`embedded` or `custom:<dir>`) and
+`source_file` (the file path within the source) — enough to script
+override audits ("which of my custom files redefined `Subnet-Mask`?")
+against the JSON output.
+
+### Verifying a custom dictionary
+
+`--list-dicts` plus `--print-dict --vendor` are the standard
+debug-the-custom-dictionary loop:
+
+```sh
+# Did the custom file get loaded at all?
+./dhcpdbg -4 --list-dicts --dict /etc/dhcpdbg/dictionary.acme \
+  | grep dictionary.acme
+
+# Are the new attributes wired into the tree?
+./dhcpdbg -4 --print-dict --vendor=Acme-Networks \
+          --dict /etc/dhcpdbg/dictionary.acme
+
+# Are the sub-options under Decoded-Option-43 the right ones?
+./dhcpdbg -4 --print-dict --dict /etc/dhcpdbg/dictionary.acme \
+  | sed -n '/Decoded-Option-43/,/^##/p'
+```
+
+Same trio works for DHCPv6 — pass `-6` instead.
 
 ## Output format
 

@@ -132,6 +132,12 @@ type parser struct {
 	// includedOnce avoids cycles if a dictionary $INCLUDEs another that
 	// $INCLUDEs back (unlikely but cheap to guard against).
 	includedOnce map[string]bool
+
+	// currentFile is the relPath of the file parseFile is currently reading
+	// (saved/restored around $INCLUDE). Stamped onto each Attr.SourceFile
+	// so the info subsystem can compute true per-file counts for
+	// --list-dicts.
+	currentFile string
 }
 
 func (p *parser) parseFile(relPath string) error {
@@ -152,6 +158,23 @@ func (p *parser) parseFile(relPath string) error {
 		return fmt.Errorf("open %s (%s): %w", relPath, p.source.Name(), err)
 	}
 	defer f.Close()
+	// Record this file in the protocol's load-order list so `--list-dicts`
+	// can enumerate every file that contributed (root + each $INCLUDE).
+	// p.proto may still be nil here for the very first file (before its
+	// BEGIN PROTOCOL line runs); defer to end-of-file in that case.
+	srcName := p.source.Name()
+	protoBefore := p.proto
+	if p.proto != nil {
+		p.proto.LoadedFiles = append(p.proto.LoadedFiles, LoadedFile{Source: srcName, Path: relPath})
+	}
+	defer func() {
+		if protoBefore == nil && p.proto != nil {
+			p.proto.LoadedFiles = append(p.proto.LoadedFiles, LoadedFile{Source: srcName, Path: relPath})
+		}
+	}()
+	prevFile := p.currentFile
+	p.currentFile = relPath
+	defer func() { p.currentFile = prevFile }()
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 
@@ -372,6 +395,19 @@ func (p *parser) handleVendor(fields []string) error {
 	if p.proto != nil {
 		p.proto.Vendors[uint32(num)] = fields[1]
 		p.proto.VendorsByName[fields[1]] = uint32(num)
+		// Remember which source declared the vendor so the info dump can
+		// attribute it. First declaration wins (matches addAttr semantics
+		// for cross-source overrides).
+		if _, ok := p.proto.VendorSources[fields[1]]; !ok {
+			// Source label embeds the file so the info dump can produce a
+			// short, file-grained tag (`rfc3925`, `adsl_forum`,
+			// `custom:dictionary.acme`).
+			label := p.sourceName()
+			if p.currentFile != "" {
+				label = label + "::" + p.currentFile
+			}
+			p.proto.VendorSources[fields[1]] = label
+		}
 	}
 	return nil
 }
@@ -409,13 +445,14 @@ func (p *parser) handleAttribute(fields []string) error {
 
 	flags, cloneFrom := parseFlags(flagsTok)
 	a := &Attr{
-		Name:      name,
-		Code:      code,
-		Type:      at,
-		Flags:     flags,
-		Internal:  p.flagsInternal,
-		CloneFrom: cloneFrom,
-		Source:    p.sourceName(),
+		Name:       name,
+		Code:       code,
+		Type:       at,
+		Flags:      flags,
+		Internal:   p.flagsInternal,
+		CloneFrom:  cloneFrom,
+		Source:     p.sourceName(),
+		SourceFile: p.currentFile,
 	}
 	if vendorOverride != 0 {
 		a.Vendor = vendorOverride

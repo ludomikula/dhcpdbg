@@ -36,10 +36,15 @@ func main() {
 		xx          = flag.Bool("xx", false, "very verbose (hex dump)")
 		dictReplace = flag.Bool("dict-replace", false, "skip embedded dictionaries; only load --dict paths")
 		decOpt43    = flag.String("decode-option-43", "", "vendor name (under Decoded-Option-43) used to parse option 43 payloads")
+		listDicts   = flag.Bool("list-dicts", false, "list every loaded dictionary file and exit")
+		printDict   = flag.Bool("print-dict", false, "print the loaded dictionary tree and exit")
+		formatS     = flag.String("format", "text", "info output format: text|json")
 		showHelp    = flag.Bool("h", false, "show this help")
 	)
 	var dictPaths stringSlice
+	var infoVendors stringSlice
 	flag.Var(&dictPaths, "dict", "extra FreeRADIUS dictionary file or directory (repeatable)")
+	flag.Var(&infoVendors, "vendor", "filter --print-dict to the named vendor (repeatable)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -57,6 +62,49 @@ func main() {
 	family := cli.V4
 	if *v6 {
 		family = cli.V6
+	}
+
+	// Info mode: --list-dicts and --print-dict both bypass the socket and
+	// rendering input file. --vendor without one of the dump flags implies
+	// --print-dict.
+	wantInfo := *listDicts || *printDict || len(infoVendors) > 0
+	if wantInfo {
+		// Reject combinations that don't make sense — info mode is
+		// self-contained and mixes badly with packet I/O.
+		if *msgType != "" || *iface != "" || *server != "" || *inputPath != "" {
+			fail("info flags (--list-dicts, --print-dict, --vendor) cannot be combined with -t/-i/-s/-f")
+		}
+		if *modeS != "request" {
+			fail("info flags cannot be combined with --mode=%s", *modeS)
+		}
+		var im cli.InfoMode
+		switch {
+		case *listDicts && *printDict:
+			fail("--list-dicts and --print-dict are mutually exclusive")
+		case *listDicts:
+			im = cli.InfoListDicts
+		default:
+			im = cli.InfoPrintDict
+		}
+		var asJSON bool
+		switch *formatS {
+		case "text":
+			asJSON = false
+		case "json":
+			asJSON = true
+		default:
+			fail("unknown --format=%q (want text|json)", *formatS)
+		}
+		rc := cli.Run(cli.Options{
+			Family:      family,
+			Mode:        cli.ModeInfo,
+			InfoMode:    im,
+			InfoVendors: []string(infoVendors),
+			InfoJSON:    asJSON,
+			DictPaths:   []string(dictPaths),
+			DictReplace: *dictReplace,
+		})
+		os.Exit(rc)
 	}
 
 	timeout, err := time.ParseDuration(*timeoutS)
@@ -126,11 +174,16 @@ Usage:
           [-r RETRIES] [-T TIMEOUT] [-f FILE] [-x | -xx]
           [--dict PATH ...] [--dict-replace]
           [--decode-option-43 VENDOR]
+  dhcpdbg (-4|-6) (--list-dicts | --print-dict [--vendor NAME ...])
+          [--dict PATH ...] [--dict-replace] [--format text|json]
 
 Examples:
   dhcpdbg -4 -t discover -i eth0 --socket=raw -s 255.255.255.255 < attrs.txt
   dhcpdbg -6 -t solicit -i eth0
   dhcpdbg -4 --mode=listen -i eth0
+  dhcpdbg -4 --list-dicts
+  dhcpdbg -4 --print-dict --vendor=ADSL-Forum
+  dhcpdbg -4 --print-dict --dict /etc/dhcpdbg/dictionary.acme --format=json
 
 Input format (one attribute per line, blank lines separate packets):
   Hostname = "lab-host"

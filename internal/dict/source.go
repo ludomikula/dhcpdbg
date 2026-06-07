@@ -33,7 +33,7 @@ func (s *embeddedSource) Open(name string) (io.ReadCloser, error) {
 	return s.fs.Open(path.Join(s.root, name))
 }
 
-func (s *embeddedSource) Name() string { return "embedded:" + s.root }
+func (s *embeddedSource) Name() string { return "embedded" }
 
 // fileSource serves dictionary files from a real directory on disk. The
 // parser opens a file by its basename inside dir.
@@ -51,7 +51,7 @@ func (s *fileSource) Open(name string) (io.ReadCloser, error) {
 	return os.Open(full)
 }
 
-func (s *fileSource) Name() string { return s.dir }
+func (s *fileSource) Name() string { return "custom:" + s.dir }
 
 // customLayer pairs a source with the root file the parser should kick off
 // at within that source. Expanding a single --dict path produces one or

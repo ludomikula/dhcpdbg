@@ -19,6 +19,7 @@ import (
 
 	"github.com/ludomikula/dhcpdbg/internal/attrs"
 	"github.com/ludomikula/dhcpdbg/internal/dict"
+	"github.com/ludomikula/dhcpdbg/internal/info"
 	"github.com/ludomikula/dhcpdbg/internal/sock"
 	"github.com/ludomikula/dhcpdbg/internal/wire4"
 	"github.com/ludomikula/dhcpdbg/internal/wire6"
@@ -38,6 +39,23 @@ type Mode int
 const (
 	ModeRequest Mode = iota
 	ModeListen
+	// ModeInfo is the dictionary-inspection mode. It loads the protocol
+	// but does not open a socket — it just renders the dictionary tree
+	// through internal/info per the Info* fields below.
+	ModeInfo
+)
+
+// InfoMode selects which info-mode rendering to run.
+type InfoMode int
+
+const (
+	// InfoNone is the default zero value; ModeInfo with InfoNone is invalid.
+	InfoNone InfoMode = iota
+	// InfoListDicts lists every loaded dictionary file in load order.
+	InfoListDicts
+	// InfoPrintDict prints the full friendly dictionary dump (or a
+	// filtered subset when InfoVendors is non-empty).
+	InfoPrintDict
 )
 
 // Options is the fully-resolved CLI input — main fills this in and calls Run.
@@ -68,6 +86,13 @@ type Options struct {
 	// option 43 stays opaque (Vendor-Specific-Options = 0x...).
 	DecodeOption43 string
 
+	// Info* fields drive ModeInfo. Ignored in request / listen modes.
+	InfoMode    InfoMode
+	InfoVendors []string
+	// InfoJSON switches the info renderer from text to JSON. The text
+	// renderer is the default.
+	InfoJSON bool
+
 	Stdout io.Writer
 	Stderr io.Writer
 }
@@ -89,11 +114,38 @@ func Run(opts Options) int {
 	}
 
 	switch opts.Mode {
+	case ModeInfo:
+		return runInfo(opts, proto)
 	case ModeListen:
 		return runListen(opts, proto)
 	default:
 		return runRequest(opts, proto)
 	}
+}
+
+// runInfo renders the loaded protocol's dictionary tree through the
+// internal/info package and exits. It opens no sockets and reads no
+// input file.
+func runInfo(opts Options, proto *dict.Protocol) int {
+	fmtSel := info.FormatText
+	if opts.InfoJSON {
+		fmtSel = info.FormatJSON
+	}
+	var err error
+	switch opts.InfoMode {
+	case InfoListDicts:
+		err = info.ListDicts(opts.Stdout, proto, fmtSel)
+	case InfoPrintDict:
+		err = info.PrintDict(opts.Stdout, proto, opts.InfoVendors, fmtSel)
+	default:
+		fmt.Fprintln(opts.Stderr, "dhcpdbg: no info action selected")
+		return 2
+	}
+	if err != nil {
+		fmt.Fprintf(opts.Stderr, "dhcpdbg: %v\n", err)
+		return 2
+	}
+	return 0
 }
 
 func loadProto(f Family, opts Options) (*dict.Protocol, error) {

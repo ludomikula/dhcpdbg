@@ -163,7 +163,8 @@ type Attr struct {
 	Flags    AttrFlags
 	Vendor   uint32 // 0 for non-vendor attrs
 	Internal bool   // FLAGS internal — header pseudo-attr, not an option
-	Source   string // dictionary source the attribute came from (for override diagnostics)
+	Source     string // dictionary source the attribute came from (for override diagnostics)
+	SourceFile string // file path within Source that introduced this attribute (relPath)
 
 	// EnumByName / EnumByValue hold the VALUE statements for this attribute.
 	EnumByName  map[string]uint64
@@ -235,9 +236,27 @@ type Protocol struct {
 	byCode map[uint32]*Attr // for top-level (non-vendor) attrs
 
 	// Vendors: enterprise-number -> vendor name; ByVendor[vendor][code] -> attr.
-	Vendors   map[uint32]string
-	ByVendor  map[uint32]map[uint32]*Attr
+	Vendors       map[uint32]string
+	ByVendor      map[uint32]map[uint32]*Attr
 	VendorsByName map[string]uint32
+
+	// VendorSources records the source name of the dictionary file that
+	// introduced each VENDOR declaration, keyed by vendor name. Used by the
+	// info subsystem to attribute vendor blocks to their origin file.
+	VendorSources map[string]string
+
+	// LoadedFiles is the in-order list of dictionary files actually opened
+	// during parsing (one entry per $INCLUDE, embedded root, or custom
+	// file). The info subsystem renders this verbatim for --list-dicts.
+	LoadedFiles []LoadedFile
+}
+
+// LoadedFile is one (source, path) pair that contributed lines to the
+// protocol. Source is the dictSource.Name() value ("embedded" or
+// "custom:<dir>"); Path is the file path within that source.
+type LoadedFile struct {
+	Source string
+	Path   string
 }
 
 func newProtocol(name string, code uint32) *Protocol {
@@ -249,6 +268,7 @@ func newProtocol(name string, code uint32) *Protocol {
 		Vendors:       make(map[uint32]string),
 		ByVendor:      make(map[uint32]map[uint32]*Attr),
 		VendorsByName: make(map[string]uint32),
+		VendorSources: make(map[string]string),
 	}
 }
 
