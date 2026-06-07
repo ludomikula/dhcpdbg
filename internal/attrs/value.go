@@ -18,14 +18,66 @@ import (
 )
 
 // Value is a discriminated typed value. Exactly one of the fields matching
-// Type is meaningful.
+// Type is meaningful. For container types (struct / group / vsa) extra
+// fields (Members / Group / VSA) hold the recursive substructure used by
+// the structured DHCPv6 codec.
 type Value struct {
-	Type   dict.AttrType
-	Uint   uint64    // uint8/16/32/64, bool (0/1), date, time_delta, attribute
-	Str    string    // string
-	Bytes  []byte    // octets, ether, ifid, ipv4prefix, ipv6prefix, struct/group/tlv/vsa raw
-	IPv4   net.IP    // ipaddr (4 bytes)
-	IPv6   net.IP    // ipv6addr (16 bytes)
+	Type  dict.AttrType
+	Uint  uint64 // uint8/16/32/64, bool (0/1), date, time_delta, attribute
+	Str   string // string
+	Bytes []byte // octets, ether, ifid, ipv4prefix, ipv6prefix, opaque struct
+	IPv4  net.IP // ipaddr (4 bytes)
+	IPv6  net.IP // ipv6addr (16 bytes)
+
+	// Members is the in-order list of (Member, Value) pairs for a
+	// struct-typed value. The encoder walks Members in this slice's order
+	// — matching the dictionary's MEMBER declaration order, which is the
+	// on-wire layout.
+	Members []MemberValue
+
+	// Group holds the sub-options of a group-typed value. Each Pair is a
+	// full DHCPv6 sub-option. The encoder emits them as code(2)+len(2)+value.
+	Group []Pair
+
+	// VSA holds (PEN, sub-options) for a vsa-typed value — DHCPv6
+	// Vendor-Opts (option 17).
+	VSA *VSAValue
+}
+
+// MemberValue pairs a dictionary Member with its concrete value.
+type MemberValue struct {
+	Member *dict.Member
+	Value  Value
+}
+
+// VSAValue is the contents of a DHCPv6 Vendor-Opts option: an enterprise
+// number followed by a list of vendor-defined sub-options.
+type VSAValue struct {
+	PEN     uint32
+	Options []Pair
+}
+
+// MemberByName looks up a struct member by name. Returns the in-place
+// pointer so the parser can append to it as more lines arrive.
+func (v *Value) MemberByName(name string) *MemberValue {
+	for i := range v.Members {
+		if v.Members[i].Member != nil && v.Members[i].Member.Name == name {
+			return &v.Members[i]
+		}
+	}
+	return nil
+}
+
+// SetMember stores or replaces a struct member's value, preserving the
+// MEMBER declaration order (later lines update in place).
+func (v *Value) SetMember(m *dict.Member, val Value) {
+	for i := range v.Members {
+		if v.Members[i].Member == m {
+			v.Members[i].Value = val
+			return
+		}
+	}
+	v.Members = append(v.Members, MemberValue{Member: m, Value: val})
 }
 
 // Pair couples a dictionary attribute with a value.

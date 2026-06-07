@@ -3,11 +3,17 @@
 // dictionaries and answer attribute name<->number lookups, type lookups, and
 // VALUE enum lookups for the encoder/decoder.
 //
-// The full v4 grammar (struct/MEMBER nesting, key=, clone=, union, vsa) is
-// recognised but only partially modeled. For dhcpdbg we treat structured
-// attributes (Client-ID, IA-NA, Vendor-Opts, ...) as opaque octets by default;
-// the user can still craft them by passing a hex blob, and the decoder prints
-// them as hex. This is documented in DHCP-SPEC.md as the debug-tool default.
+// We model:
+//   - top-level ATTRIBUTE / VENDOR / VALUE / $INCLUDE / FLAGS / BEGIN PROTOCOL
+//   - MEMBER lists inside struct-typed ATTRIBUTEs (used by the structured
+//     DHCPv6 codec — see internal/wire6/struct.go)
+//   - clone=@.X redirection so Server-ID shares Client-ID's MEMBER tree
+//   - the array / length=uint8 / length=uint16 / fixed-size octets[N] flag
+//     forms that DHCPv6 structured options use in practice
+//
+// What we do NOT model generically is the union variant tree (Client-ID's
+// DUID discriminator). Hand-coded codecs in internal/wire6/duid.go handle
+// those — see the README "Limitations" section for the rationale.
 package dict
 
 import "fmt"
@@ -162,9 +168,39 @@ type Attr struct {
 	EnumByName  map[string]uint64
 	EnumByValue map[uint64]string
 
+	// Members is the ordered MEMBER list of a struct-typed attribute. Nil for
+	// non-struct attributes. The MEMBER order is the on-wire serialisation
+	// order — the codec walks Members in this slice's order.
+	Members []*Member
+
+	// CloneFrom is set from `clone=@.X` flags. After the full dictionary is
+	// loaded, the parser copies the source attribute's Members onto this
+	// attribute so Server-ID shares Client-ID's structure.
+	CloneFrom string
+
 	// Children: for TLV / struct / vsa parents, dotted children (e.g. 276.1).
 	// Maps sub-code -> child Attr.
 	Children map[uint32]*Attr
+}
+
+// Member is one field of a struct-typed attribute. The on-wire layout is
+// concatenated members in declaration order.
+type Member struct {
+	Name string
+	Type AttrType
+
+	// Flags from the MEMBER line.
+	Array        bool
+	IsKey        bool   // `key` flag — this member is a discriminator
+	KeyRef       string // `key=Name` — this member references a sibling key
+	LengthPrefix int    // 0, 8, or 16; set by `length=uint8` / `length=uint16`
+	FixedSize    int    // `octets[N]` — fixed N-octet field
+
+	// EnumByName / EnumByValue allow `VALUE <attr> <name> <num>` statements
+	// to attach to a MEMBER as well as an ATTRIBUTE. Lets us resolve
+	// `Status-Code.Value = Success` into the numeric code.
+	EnumByName  map[string]uint64
+	EnumByValue map[uint64]string
 }
 
 // AttrFlags captures the optional flag tail on an ATTRIBUTE line.
@@ -176,6 +212,16 @@ type AttrFlags struct {
 	LengthPrefix int // 0 = no prefix; otherwise 8/16
 	// Raw flag string for any unmodeled flags — printed in diagnostics.
 	Raw string
+}
+
+// MemberByName returns the Member with the given name, or nil.
+func (a *Attr) MemberByName(name string) *Member {
+	for _, m := range a.Members {
+		if m.Name == name {
+			return m
+		}
+	}
+	return nil
 }
 
 // Protocol is a parsed dictionary tree rooted at a BEGIN PROTOCOL block

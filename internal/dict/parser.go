@@ -34,6 +34,21 @@ func loadProtocolRoot(relPath string) (*Protocol, error) {
 	if p.proto == nil {
 		return nil, fmt.Errorf("%s: no BEGIN PROTOCOL block found", relPath)
 	}
+	// clone=@.X resolution. Server-ID is declared as
+	// `ATTRIBUTE Server-ID 2 struct clone=@.Client-ID` — at this point both
+	// attributes exist and Client-ID's Members are populated, so we can copy
+	// them across.
+	for _, a := range p.proto.byName {
+		if a.CloneFrom == "" || len(a.Members) > 0 {
+			continue
+		}
+		src := strings.TrimPrefix(a.CloneFrom, "@.")
+		ref, ok := p.proto.AttrByName(src)
+		if !ok {
+			continue
+		}
+		a.Members = ref.Members
+	}
 	return p.proto, nil
 }
 
@@ -48,6 +63,22 @@ type parser struct {
 	nsStack        []*Attr   // BEGIN Foo.Bar / END Foo.Bar — current "struct" context
 	flagsInternal  bool      // FLAGS internal (until next FLAGS line or EOF)
 	lastAttr       *Attr     // last ATTRIBUTE seen — used by `ATTRIBUTE .Sub` relative form
+
+	// currentStruct is the most recent struct-typed ATTRIBUTE — subsequent
+	// MEMBER lines append to its Members. Reset on every new ATTRIBUTE
+	// (becomes the new attr if it's struct, nil otherwise) and on BEGIN /
+	// END boundaries.
+	currentStruct *Attr
+	// lastMember is the most recent MEMBER on the current struct — used so
+	// VALUE statements inside a struct can attach to a MEMBER instead of
+	// the parent attribute.
+	lastMember *Member
+
+	// discriminatorStack tracks one entry per active BEGIN <parent>.<union>
+	// block: the discriminator MEMBER whose enum table gets populated from
+	// the codes of ATTRIBUTE statements inside the block. Pushed by BEGIN,
+	// popped by END.
+	discriminatorStack []*Member
 
 	// includedOnce avoids cycles if a dictionary $INCLUDEs another that
 	// $INCLUDEs back (unlikely but cheap to guard against).
@@ -151,21 +182,8 @@ func (p *parser) parseFile(relPath string) error {
 				return locErr(relPath, lineNo, err.Error())
 			}
 		case "MEMBER":
-			// MEMBER declarations describe struct internals. For dhcpdbg's
-			// purposes we don't reify them — the encoder/decoder treats
-			// struct-typed top-level attributes as opaque octets or via
-			// hand-coded special cases. We still parse the line so that any
-			// trailing VALUE statements inside a BEGIN block are scoped
-			// correctly via lastAttr.
-			//
-			// Format: MEMBER <name> <type> [flags...]
-			if len(fields) >= 3 {
-				// Create a synthetic Attr for VALUE scoping under nsStack.
-				a := &Attr{
-					Name: p.qualifiedName(fields[1]),
-					Type: ParseType(fields[2]),
-				}
-				p.lastAttr = a
+			if err := p.handleMember(fields); err != nil {
+				return locErr(relPath, lineNo, err.Error())
 			}
 		case "VALUE":
 			if err := p.handleValue(fields); err != nil {
@@ -213,13 +231,50 @@ func (p *parser) handleBegin(fields []string) error {
 		p.proto = newProtocol(fields[2], uint32(num))
 		return nil
 	}
-	// BEGIN Foo.Bar — push namespace.
+	// BEGIN Foo.Bar — push namespace and reset the current struct/member so
+	// MEMBER lines inside the variant body attach to whatever struct
+	// ATTRIBUTE the variant declares, not to the enclosing union's parent.
 	qual := fields[1]
-	// We use the name as a string key — the parser doesn't need to resolve
-	// it back to a parent Attr because we ignore struct internals.
 	syn := &Attr{Name: qual}
 	p.nsStack = append(p.nsStack, syn)
+	p.currentStruct = nil
+	p.lastMember = nil
+	// If qual is `<Parent>.<UnionMember>`, find the discriminator MEMBER on
+	// Parent that the union's key= directive references. ATTRIBUTEs inside
+	// this block will register their (name, code) on that discriminator's
+	// enum table — that's how `Client-ID.DUID = LLT` resolves.
+	disc := p.findDiscriminator(qual)
+	p.discriminatorStack = append(p.discriminatorStack, disc)
 	return nil
+}
+
+// findDiscriminator looks for the union key MEMBER referenced by the
+// `BEGIN <parent>.<member>` qualifier. Returns nil if the path doesn't
+// resolve — the parser continues, just doesn't auto-populate enums.
+func (p *parser) findDiscriminator(qual string) *Member {
+	dot := strings.IndexByte(qual, '.')
+	if dot < 0 || p.proto == nil {
+		return nil
+	}
+	parentName := qual[:dot]
+	memberName := qual[dot+1:]
+	parent, ok := p.proto.byName[parentName]
+	if !ok {
+		return nil
+	}
+	unionMember := parent.MemberByName(memberName)
+	if unionMember == nil || unionMember.KeyRef == "" {
+		return nil
+	}
+	disc := parent.MemberByName(unionMember.KeyRef)
+	if disc == nil {
+		return nil
+	}
+	if disc.EnumByName == nil {
+		disc.EnumByName = make(map[string]uint64)
+		disc.EnumByValue = make(map[uint64]string)
+	}
+	return disc
 }
 
 func (p *parser) handleEnd(fields []string) error {
@@ -235,6 +290,11 @@ func (p *parser) handleEnd(fields []string) error {
 		return fmt.Errorf("END %s with empty namespace stack", fields[1])
 	}
 	p.nsStack = p.nsStack[:len(p.nsStack)-1]
+	if len(p.discriminatorStack) > 0 {
+		p.discriminatorStack = p.discriminatorStack[:len(p.discriminatorStack)-1]
+	}
+	p.currentStruct = nil
+	p.lastMember = nil
 	return nil
 }
 
@@ -284,12 +344,14 @@ func (p *parser) handleAttribute(fields []string) error {
 		at = TypeOctets
 	}
 
+	flags, cloneFrom := parseFlags(flagsTok)
 	a := &Attr{
-		Name:     name,
-		Code:     code,
-		Type:     at,
-		Flags:    parseFlags(flagsTok),
-		Internal: p.flagsInternal,
+		Name:      name,
+		Code:      code,
+		Type:      at,
+		Flags:     flags,
+		Internal:  p.flagsInternal,
+		CloneFrom: cloneFrom,
 	}
 	if vendorOverride != 0 {
 		a.Vendor = vendorOverride
@@ -306,12 +368,89 @@ func (p *parser) handleAttribute(fields []string) error {
 		// if they need to address a sub-attr, but skip the byCode index where
 		// the small code would collide with real top-level DHCP options.
 		p.proto.byName[a.Name] = a
+		// If we're inside a BEGIN <parent>.<unionMember> block, register
+		// this ATTRIBUTE's code on the discriminator MEMBER's enum so
+		// `Client-ID.DUID = LLT` can resolve.
+		if n := len(p.discriminatorStack); n > 0 {
+			if disc := p.discriminatorStack[n-1]; disc != nil {
+				disc.EnumByName[name] = uint64(code)
+				disc.EnumByValue[uint64(code)] = name
+			}
+		}
 	} else {
 		if err := p.proto.addAttr(a); err != nil {
 			return err
 		}
 	}
 	p.lastAttr = a
+	// Subsequent MEMBER lines attach to this attribute if it's a struct or
+	// union. Any other ATTRIBUTE closes the prior struct's MEMBER list.
+	if a.Type == TypeStruct || a.Type == TypeUnion {
+		p.currentStruct = a
+	} else {
+		p.currentStruct = nil
+	}
+	p.lastMember = nil
+	return nil
+}
+
+// handleMember parses a `MEMBER <name> <type> [flags...]` line and appends
+// it to the most recent struct/union ATTRIBUTE's Members list. Recognised
+// flag forms (MEMBER-specific):
+//
+//	key                  — this member is the union discriminator
+//	key=<NAME>           — this member's union references sibling NAME
+//	array                — repeated, all elements share the member layout
+//	length=uint8|uint16  — per-element length prefix (User-Class.Value etc.)
+//	octets[N]            — fixed-N-octet field (Auth.Information etc.)
+func (p *parser) handleMember(fields []string) error {
+	if len(fields) < 3 {
+		return fmt.Errorf("MEMBER needs name and type")
+	}
+	mName := fields[1]
+	typeTok := fields[2]
+	// `octets[N]` is a fixed-size variant of octets, expressed as one token.
+	fixedSize := 0
+	if i := strings.IndexByte(typeTok, '['); i > 0 && strings.HasSuffix(typeTok, "]") {
+		n, err := strconv.Atoi(typeTok[i+1 : len(typeTok)-1])
+		if err == nil {
+			fixedSize = n
+			typeTok = typeTok[:i]
+		}
+	}
+	m := &Member{
+		Name:      mName,
+		Type:      ParseType(typeTok),
+		FixedSize: fixedSize,
+	}
+	// Remaining tokens are space-separated flags. `key=Hardware-Type` and
+	// `length=uint16,array` mix into one tail; split on whitespace, then on
+	// commas inside each piece.
+	for _, raw := range fields[3:] {
+		for _, tok := range strings.Split(raw, ",") {
+			tok = strings.TrimSpace(tok)
+			switch {
+			case tok == "":
+			case tok == "key":
+				m.IsKey = true
+			case strings.HasPrefix(tok, "key="):
+				m.KeyRef = strings.TrimPrefix(tok, "key=")
+			case tok == "array":
+				m.Array = true
+			case tok == "length=uint8":
+				m.LengthPrefix = 8
+			case tok == "length=uint16":
+				m.LengthPrefix = 16
+			}
+		}
+	}
+	if p.currentStruct == nil {
+		// MEMBER outside a struct context — keep parsing the dictionary but
+		// don't lose information. This shouldn't happen in valid input.
+		return nil
+	}
+	p.currentStruct.Members = append(p.currentStruct.Members, m)
+	p.lastMember = m
 	return nil
 }
 
@@ -349,30 +488,41 @@ func parseCodeSpec(spec string, last *Attr) (uint32, uint32, bool, error) {
 	return uint32(n), 0, false, nil
 }
 
-func parseFlags(tail string) AttrFlags {
+// parseFlags walks an ATTRIBUTE's flag tail. Recognised forms:
+//
+//	array, concat                   — wire-level repetition rules
+//	length=uint8|uint16             — outer-option length prefix
+//	clone=@.<Name>                  — share Members with another struct
+//	exists                          — synonym for "bool that may be absent"
+func parseFlags(tail string) (AttrFlags, string) {
 	f := AttrFlags{Raw: tail}
-	for _, tok := range strings.Split(tail, ",") {
-		tok = strings.TrimSpace(tok)
-		switch {
-		case tok == "":
-			// skip
-		case tok == "array":
-			f.Array = true
-		case tok == "concat":
-			f.Concat = true
-		case strings.HasPrefix(tok, "length="):
-			v := strings.TrimPrefix(tok, "length=")
-			// Comma-split already happened on the outer call. The value can
-			// itself be uint8/uint16 etc.
-			switch v {
-			case "uint8":
-				f.LengthPrefix = 8
-			case "uint16":
-				f.LengthPrefix = 16
+	cloneFrom := ""
+	// Flag tails are whitespace- or comma-separated. Walk both forms.
+	for _, group := range strings.Fields(tail) {
+		for _, tok := range strings.Split(group, ",") {
+			tok = strings.TrimSpace(tok)
+			switch {
+			case tok == "":
+			case tok == "array":
+				f.Array = true
+			case tok == "concat":
+				f.Concat = true
+			case tok == "exists":
+				// Used by DHCPv4 sub-options to mean "presence-only bool".
+				// We don't need to track it.
+			case strings.HasPrefix(tok, "length="):
+				switch strings.TrimPrefix(tok, "length=") {
+				case "uint8":
+					f.LengthPrefix = 8
+				case "uint16":
+					f.LengthPrefix = 16
+				}
+			case strings.HasPrefix(tok, "clone="):
+				cloneFrom = strings.TrimPrefix(tok, "clone=")
 			}
 		}
 	}
-	return f
+	return f, cloneFrom
 }
 
 func (p *parser) handleValue(fields []string) error {
@@ -384,6 +534,25 @@ func (p *parser) handleValue(fields []string) error {
 	enumName := fields[2]
 	enumStr := fields[3]
 
+	val, err := strconv.ParseUint(enumStr, 0, 64)
+	if err != nil {
+		return fmt.Errorf("bad VALUE %q for %s", enumStr, attrName)
+	}
+
+	// VALUE often attaches to a MEMBER of the current struct rather than to
+	// a real ATTRIBUTE. Status-Code.Value, Auth.Protocol etc. work this way.
+	if p.currentStruct != nil {
+		if m := p.currentStruct.MemberByName(attrName); m != nil {
+			if m.EnumByName == nil {
+				m.EnumByName = make(map[string]uint64)
+				m.EnumByValue = make(map[uint64]string)
+			}
+			m.EnumByName[enumName] = val
+			m.EnumByValue[val] = enumName
+			return nil
+		}
+	}
+
 	target, ok := p.proto.byName[attrName]
 	if !ok {
 		// VALUE may refer to a MEMBER inside a BEGIN block, in which case
@@ -393,10 +562,6 @@ func (p *parser) handleValue(fields []string) error {
 	if target.EnumByName == nil {
 		target.EnumByName = make(map[string]uint64)
 		target.EnumByValue = make(map[uint64]string)
-	}
-	val, err := strconv.ParseUint(enumStr, 0, 64)
-	if err != nil {
-		return fmt.Errorf("bad VALUE %q for %s", enumStr, attrName)
 	}
 	target.EnumByName[enumName] = val
 	target.EnumByValue[val] = enumName

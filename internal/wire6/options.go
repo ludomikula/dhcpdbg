@@ -12,9 +12,10 @@ import (
 // in network byte order (RFC 8415 §11.1). Repeated attributes that the
 // dictionary marks `array` (e.g. Option-Request) are concatenated into a
 // single option payload — that's how DHCPv6 ORO is on the wire (RFC 8415
-// §21.7). Nested options inside IA-NA/IA-PD/IA-TA are NOT recursively
-// encoded; for the debug client we accept the IA's value as an opaque octets
-// blob the user constructs directly.
+// §21.7). Struct, group, vsa, and union container types route through the
+// structured codec (struct.go, vsa.go, duid.go) so IA-NA, IA-Addr, IA-PD,
+// IA-PD-Prefix, Status-Code, Vendor-Class, Vendor-Opts, Client-ID, and
+// Server-ID all get field-by-field encoding from dotted-form input.
 func encodeOptions(out []byte, list []attrs.Pair, proto *dict.Protocol) ([]byte, error) {
 	type group struct {
 		code uint16
@@ -26,7 +27,7 @@ func encodeOptions(out []byte, list []attrs.Pair, proto *dict.Protocol) ([]byte,
 		if p.Attr.Code > 0xffff {
 			continue
 		}
-		b, err := encodeValue6(p.Attr, p.Value)
+		b, err := encodeOptionValue(p)
 		if err != nil {
 			return nil, fmt.Errorf("attr %s: %v", p.Attr.Name, err)
 		}
@@ -58,10 +59,10 @@ func encodeOptions(out []byte, list []attrs.Pair, proto *dict.Protocol) ([]byte,
 	return out, nil
 }
 
-// decodeOptions walks the option section of a DHCPv6 packet. Unknown option
-// codes become DHCP-Option-<n> with octets value. Group / nested options are
-// surfaced as octets — the user can further parse them via a second pass if
-// needed. This mirrors what tcpdump prints in its `-vv` mode.
+// decodeOptions walks the option section of a DHCPv6 packet. Structured
+// container types (struct, group, vsa, union) route through the structured
+// decoder so output round-trips back through the dotted-form parser.
+// Unknown option codes become DHCPv6-Option-<n> with octets value.
 func decodeOptions(data []byte, proto *dict.Protocol) ([]attrs.Pair, error) {
 	var out []attrs.Pair
 	i := 0
@@ -81,7 +82,7 @@ func decodeOptions(data []byte, proto *dict.Protocol) ([]attrs.Pair, error) {
 			i += 4 + l
 			continue
 		}
-		v, err := decodeOne6(da, payload)
+		v, err := decodeOptionPayload(da, payload, proto)
 		if err != nil {
 			return nil, err
 		}
@@ -89,6 +90,33 @@ func decodeOptions(data []byte, proto *dict.Protocol) ([]attrs.Pair, error) {
 		i += 4 + l
 	}
 	return out, nil
+}
+
+// decodeOptionPayload dispatches to the right structured decoder for an
+// attribute's type, falling back to the per-value primitive decoder.
+func decodeOptionPayload(a *dict.Attr, data []byte, proto *dict.Protocol) (attrs.Value, error) {
+	switch a.Name {
+	case "Client-ID", "Server-ID":
+		return decodeDUID(a, data), nil
+	case "Vendor-Opts":
+		return decodeVendorOpts(data, proto)
+	}
+	switch a.Type {
+	case dict.TypeStruct, dict.TypeUnion:
+		if len(a.Members) > 0 {
+			return decodeStructValue(a, data, proto)
+		}
+		return attrs.Value{Type: dict.TypeOctets, Bytes: append([]byte(nil), data...)}, nil
+	case dict.TypeGroup:
+		pairs, err := decodeOptions(data, proto)
+		if err != nil {
+			return attrs.Value{}, err
+		}
+		return attrs.Value{Type: dict.TypeGroup, Group: pairs}, nil
+	case dict.TypeVSA:
+		return decodeVendorOpts(data, proto)
+	}
+	return decodeOne6(a, data)
 }
 
 func encodeValue6(a *dict.Attr, v attrs.Value) ([]byte, error) {
