@@ -33,6 +33,13 @@ const (
 	V6 Family = 6
 )
 
+// Standard DHCP client UDP ports from RFC 2131 / RFC 8415. Used as the
+// fallback when --port (Options.BindPort) is not set.
+const (
+	defaultV4ClientPort = 68
+	defaultV6ClientPort = 546
+)
+
 // Mode is the high-level operating mode.
 type Mode int
 
@@ -85,6 +92,11 @@ type Options struct {
 	Timeout    time.Duration
 	InputPath  string // "" -> stdin
 	Verbosity  int    // -x / -xx
+
+	// BindPort overrides the local UDP bind / source port. Zero means
+	// "use the family default" — 68 for DHCPv4, 546 for DHCPv6. Applies
+	// to request mode (UDP and raw send) and listen mode (UDP bind).
+	BindPort int
 
 	// DictPaths are additional FreeRADIUS-syntax dictionary files or
 	// directories layered on top of the embedded defaults. Repeatable via
@@ -246,7 +258,8 @@ func runRequest(opts Options, proto *dict.Protocol) int {
 	cfg := sock.Config{
 		Mode:      opts.SockMode,
 		Family:    udpFamily(opts.Family),
-		Bind:      defaultBind(opts.Family, opts.SockMode),
+		Bind:      defaultBind(opts.Family, opts.SockMode, opts.BindPort),
+		SrcPort:   effectiveBindPort(opts.Family, opts.BindPort),
 		Iface:     opts.Iface,
 		Broadcast: opts.Family == V4,
 	}
@@ -297,7 +310,8 @@ func runListen(opts Options, proto *dict.Protocol) int {
 	cfg := sock.Config{
 		Mode:      opts.SockMode,
 		Family:    udpFamily(opts.Family),
-		Bind:      defaultListenBind(opts.Family),
+		Bind:      defaultListenBind(opts.Family, opts.BindPort),
+		SrcPort:   effectiveBindPort(opts.Family, opts.BindPort),
 		Iface:     opts.Iface,
 		Broadcast: opts.Family == V4,
 	}
@@ -514,21 +528,42 @@ func udpFamily(f Family) string {
 	return "udp6"
 }
 
-func defaultBind(f Family, m sock.Mode) string {
+// defaultClientPort returns the family's standard DHCP client port —
+// 68 for DHCPv4, 546 for DHCPv6. Centralised here so the CLI override
+// and the raw-socket UDP header source both fall back to the same value.
+func defaultClientPort(f Family) int {
 	if f == V4 {
-		// Client port 68 for DHCPv4.
-		return "0.0.0.0:68"
+		return defaultV4ClientPort
 	}
-	return "[::]:546"
+	return defaultV6ClientPort
 }
 
-func defaultListenBind(f Family) string {
-	if f == V4 {
-		// Listen on the server port to catch OFFER/ACK packets flowing
-		// from a server to a client. Tweak with -s if needed.
-		return "0.0.0.0:68"
+// effectiveBindPort applies the user override (BindPort != 0) on top of
+// the family default. Used for both bind and raw-socket source.
+func effectiveBindPort(f Family, override int) int {
+	if override > 0 {
+		return override
 	}
-	return "[::]:546"
+	return defaultClientPort(f)
+}
+
+func defaultBind(f Family, m sock.Mode, port int) string {
+	p := effectiveBindPort(f, port)
+	if f == V4 {
+		return fmt.Sprintf("0.0.0.0:%d", p)
+	}
+	return fmt.Sprintf("[::]:%d", p)
+}
+
+func defaultListenBind(f Family, port int) string {
+	// Listen on the client port — that's where OFFER/ACK/REPLY land when
+	// flowing from a server back to a client. Tweak with --port if a
+	// different local port is in use.
+	p := effectiveBindPort(f, port)
+	if f == V4 {
+		return fmt.Sprintf("0.0.0.0:%d", p)
+	}
+	return fmt.Sprintf("[::]:%d", p)
 }
 
 func dumpHex(w io.Writer, label string, b []byte) {

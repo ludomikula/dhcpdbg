@@ -168,7 +168,7 @@ interfaces; raw mode additionally needs `--cap-add NET_RAW`.
 
 ```
 dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
-        [--socket udp|raw] [--mode request|listen]
+        [--socket udp|raw] [--mode request|listen] [--port N]
         [-r RETRIES] [-T TIMEOUT] [-f FILE] [-x | -xx]
         [--dict PATH ...] [--dict-replace]
         [--decode-option-43 VENDOR]
@@ -187,6 +187,7 @@ dhcpdbg --replay-pcap PATH [-4|-6] [--dict PATH ...] [--dict-replace]
 | `-i IFACE`         | Egress interface. Required for `--socket=raw` and recommended for `--mode=listen`. For DHCPv6 it also selects the multicast egress interface. |
 | `--socket=udp\|raw` | Socket backend. `udp` (default) uses a regular bound UDP socket. `raw` uses AF_PACKET DGRAM on Linux and lets you send from `0.0.0.0` before a lease exists. |
 | `--mode=request\|listen` | `request` (default) sends a packet, waits for the matching reply, prints it, exits. `listen` binds and prints every DHCP packet observed on the socket until SIGINT. |
+| `--port N`         | Local UDP source/bind port. Default `68` for `-4` and `546` for `-6`. Applies to both the UDP bind in `--socket=udp` and the manually-built UDP header in `--socket=raw`. Ignored in `--list-dicts`, `--print-dict`, and `--replay-pcap` modes. |
 | `-r RETRIES`       | Retries on reply timeout. Default `2`. |
 | `-T TIMEOUT`       | Reply timeout. Accepts Go duration syntax (`2s`, `500ms`, `1m30s`). Default `3s`. |
 | `-f FILE`          | Read the attribute list from `FILE`. Defaults to stdin. Ignored in listen mode. |
@@ -1236,6 +1237,20 @@ EOF
 sudo ./dhcpdbg -4 -t inform -s 10.0.0.1 -f /tmp/inform.attrs
 ```
 
+**Bind on a non-privileged port (no root, no `CAP_NET_BIND_SERVICE`):**
+
+```sh
+# Lab relay listening on 1067, dhcpdbg sourcing from 1068.
+./dhcpdbg -4 -t discover --port=1068 -s 10.0.0.1:1067 <<EOF
+Client-Hardware-Address = 02:00:00:00:00:01
+Hostname = "lab-host"
+EOF
+```
+
+The same `--port N` works in `--socket=raw` (the value lands in the
+manually-built UDP source field) and in `--mode=listen` (the bind moves
+to the chosen port).
+
 **Quick-and-dirty server validation — repeat a DISCOVER three times:**
 
 ```sh
@@ -1277,6 +1292,13 @@ capabilities and fails fast with a clear message when they are missing,
 rather than letting the kernel return a generic `EPERM` from the bind /
 socket call.
 
+Use `--port N` with `N >= 1024` to bind on an unprivileged port — handy
+when running unprivileged against a relay or test server that listens on
+a non-standard port. The flag changes both the UDP bind (`--socket=udp`)
+and the UDP source written into the manually-built header
+(`--socket=raw`); raw mode still needs `CAP_NET_RAW`, so the escape
+hatch only buys you out of `CAP_NET_BIND_SERVICE`, not out of raw access.
+
 When running from the container, pass `--cap-add NET_BIND_SERVICE` (and
 `NET_RAW` for raw mode) to inherit the host's capability mask.
 
@@ -1303,10 +1325,6 @@ When running from the container, pass `--cap-add NET_BIND_SERVICE` (and
 - **Raw mode is Linux-only.** Builds on other platforms compile the
   stubbed implementation, which fails at runtime with an explanatory
   message. UDP mode works everywhere.
-- The default ports (`68`, `546`) are hardcoded; running as a non-root
-  user against a server on a non-standard port currently still requires
-  privileges because the source port stays on the canonical DHCP client
-  port.
 
 ## License
 

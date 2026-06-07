@@ -49,13 +49,26 @@ func openRaw(cfg Config) (Conn, error) {
 		syscall.Close(fd)
 		return nil, fmt.Errorf("bind AF_PACKET: %v", err)
 	}
-	return &rawConn{fd: fd, iface: ifi, family: cfg.Family}, nil
+	return &rawConn{fd: fd, iface: ifi, family: cfg.Family, srcPort: cfg.SrcPort}, nil
 }
 
 type rawConn struct {
-	fd     int
-	iface  *net.Interface
-	family string
+	fd      int
+	iface   *net.Interface
+	family  string
+	srcPort int // UDP source port; 0 means use the family default
+}
+
+// srcPortFor returns the configured source port, defaulting to 68 for
+// "udp4" and 546 for "udp6" when the caller left it at 0.
+func (r *rawConn) srcPortFor() uint16 {
+	if r.srcPort > 0 {
+		return uint16(r.srcPort)
+	}
+	if r.family == "udp4" {
+		return DefaultV4ClientPort
+	}
+	return DefaultV6ClientPort
 }
 
 func (r *rawConn) SendTo(buf []byte, dst *net.UDPAddr) error {
@@ -77,7 +90,7 @@ func (r *rawConn) send4(payload []byte, dst *net.UDPAddr) error {
 	}
 	udpLen := 8 + len(payload)
 	udp := make([]byte, udpLen)
-	binary.BigEndian.PutUint16(udp[0:2], 68)
+	binary.BigEndian.PutUint16(udp[0:2], r.srcPortFor())
 	binary.BigEndian.PutUint16(udp[2:4], uint16(dst.Port))
 	binary.BigEndian.PutUint16(udp[4:6], uint16(udpLen))
 	// UDP checksum optional for IPv4; set to 0.
@@ -125,7 +138,7 @@ func (r *rawConn) send6(payload []byte, dst *net.UDPAddr) error {
 	dstIP := dst.IP.To16()
 	udpLen := 8 + len(payload)
 	udp := make([]byte, udpLen)
-	binary.BigEndian.PutUint16(udp[0:2], 546)
+	binary.BigEndian.PutUint16(udp[0:2], r.srcPortFor())
 	binary.BigEndian.PutUint16(udp[2:4], uint16(dst.Port))
 	binary.BigEndian.PutUint16(udp[4:6], uint16(udpLen))
 	binary.BigEndian.PutUint16(udp[6:8], 0)

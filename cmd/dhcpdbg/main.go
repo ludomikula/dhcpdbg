@@ -29,6 +29,7 @@ func main() {
 		iface       = flag.String("i", "", "egress interface (required for raw/listen)")
 		sockModeS   = flag.String("socket", "udp", "socket backend: udp|raw")
 		modeS       = flag.String("mode", "request", "operating mode: request|listen")
+		bindPort    = flag.Int("port", 0, "local UDP source/bind port (default 68 for -4, 546 for -6)")
 		retries     = flag.Int("r", 2, "retries on timeout")
 		timeoutS    = flag.String("T", "3s", "reply timeout (e.g. 2s, 500ms)")
 		inputPath   = flag.String("f", "", "attribute-list input file (default stdin)")
@@ -63,6 +64,9 @@ func main() {
 	if *v4 && *v6 {
 		fail("-4 and -6 are mutually exclusive")
 	}
+	if *bindPort < 0 || *bindPort > 65535 {
+		fail("--port=%d out of range (1..65535)", *bindPort)
+	}
 
 	var family cli.Family
 	switch {
@@ -87,6 +91,9 @@ func main() {
 		}
 		if *modeS != "request" {
 			fail("info flags cannot be combined with --mode=%s", *modeS)
+		}
+		if *bindPort != 0 {
+			fail("info flags cannot be combined with --port")
 		}
 		var im cli.InfoMode
 		switch {
@@ -127,6 +134,9 @@ func main() {
 		}
 		if *modeS != "request" {
 			fail("--replay-pcap cannot be combined with --mode=%s", *modeS)
+		}
+		if *bindPort != 0 {
+			fail("--replay-pcap cannot be combined with --port")
 		}
 		var asJSON bool
 		switch *formatS {
@@ -225,6 +235,7 @@ func main() {
 		Timeout:        timeout,
 		InputPath:      *inputPath,
 		Verbosity:      verbosity,
+		BindPort:       *bindPort,
 		DictPaths:      []string(dictPaths),
 		DictReplace:    *dictReplace,
 		DecodeOption43: *decOpt43,
@@ -237,7 +248,7 @@ func usage() {
 
 Usage:
   dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
-          [--socket udp|raw] [--mode request|listen]
+          [--socket udp|raw] [--mode request|listen] [--port N]
           [-r RETRIES] [-T TIMEOUT] [-f FILE] [-x | -xx]
           [--dict PATH ...] [--dict-replace]
           [--decode-option-43 VENDOR]
@@ -251,6 +262,7 @@ Examples:
   dhcpdbg -4 -t discover -i eth0 --socket=raw -s 255.255.255.255 < attrs.txt
   dhcpdbg -6 -t solicit -i eth0
   dhcpdbg -4 --mode=listen -i eth0
+  dhcpdbg -4 -t discover --port=1068 -i eth0 --socket=raw -s 10.0.0.1
   dhcpdbg -4 --list-dicts
   dhcpdbg -4 --print-dict --vendor=ADSL-Forum
   dhcpdbg -4 --print-dict --dict /etc/dhcpdbg/dictionary.acme --format=json

@@ -45,10 +45,24 @@ type Config struct {
 	Mode       Mode
 	Family     string // "udp4" or "udp6"
 	Bind       string
+	// SrcPort is the UDP source port written into the manually-built
+	// IPv4/IPv6 + UDP header when Mode == ModeRaw. The kernel does not
+	// know about the AF_PACKET DGRAM source port, so the caller must
+	// supply it. Ignored for ModeUDP (the bind address determines the
+	// source there). Zero means "use the family default" — 68 for
+	// "udp4", 546 for "udp6".
+	SrcPort    int
 	Iface      string // required for ModeRaw
 	Broadcast  bool   // set SO_BROADCAST on the UDP socket
 	MulticastIface string // for DHCPv6 multicast egress (sets IPV6_MULTICAST_IF)
 }
+
+// Standard DHCP client UDP ports — used as the raw-socket SrcPort
+// fallback when Config.SrcPort is 0.
+const (
+	DefaultV4ClientPort = 68
+	DefaultV6ClientPort = 546
+)
 
 // Open returns a Conn matching cfg, validating prerequisites up front.
 func Open(cfg Config) (Conn, error) {
