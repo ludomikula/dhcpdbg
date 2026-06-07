@@ -64,7 +64,7 @@ Relay-Agent-Information.Remote-Id  = "modem=001abc002233"
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	pkt, err := Decode(wire, proto)
+	pkt, err := Decode(wire, proto, "")
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}
@@ -202,7 +202,7 @@ V-I-Vendor-Specific.Options.Provisioning-Code = "ZONE-A"
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	pkt, err := Decode(wire, proto)
+	pkt, err := Decode(wire, proto, "")
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}

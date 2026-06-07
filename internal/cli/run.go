@@ -63,6 +63,10 @@ type Options struct {
 	// only the files in DictPaths are loaded. Useful for fully-custom
 	// deployments.
 	DictReplace bool
+	// DecodeOption43 is the vendor name (under Decoded-Option-43) the
+	// decoder should walk an option-43 payload against. When empty,
+	// option 43 stays opaque (Vendor-Specific-Options = 0x...).
+	DecodeOption43 string
 
 	Stdout io.Writer
 	Stderr io.Writer
@@ -178,7 +182,7 @@ func runRequest(opts Options, proto *dict.Protocol) int {
 		if opts.Verbosity >= 1 {
 			fmt.Fprintf(opts.Stderr, "dhcpdbg: sent %d bytes to %s\n", len(wire), dst.String())
 		}
-		reply, src, err := waitForReply(conn, opts.Timeout, wire, opts.Family, proto, opts.Verbosity)
+		reply, src, err := waitForReply(conn, opts.Timeout, wire, opts.Family, proto, opts)
 		if err == sock.ErrTimeout {
 			if attempt < opts.Retries {
 				fmt.Fprintf(opts.Stderr, "dhcpdbg: timeout, retry %d/%d\n", attempt+1, opts.Retries)
@@ -236,7 +240,7 @@ func runListen(opts Options, proto *dict.Protocol) int {
 			fmt.Fprintf(opts.Stderr, "dhcpdbg: recv: %v\n", err)
 			return 3
 		}
-		pairs, _, err := decodeAny(opts.Family, buf, proto)
+		pairs, _, err := decodeAny(opts.Family, buf, proto, opts)
 		if err != nil {
 			fmt.Fprintf(opts.Stderr, "dhcpdbg: decode: %v\n", err)
 			continue
@@ -253,16 +257,16 @@ type incoming struct {
 	exitCode int
 }
 
-func waitForReply(conn sock.Conn, timeout time.Duration, sent []byte, family Family, proto *dict.Protocol, verbosity int) (*incoming, *net.UDPAddr, error) {
+func waitForReply(conn sock.Conn, timeout time.Duration, sent []byte, family Family, proto *dict.Protocol, opts Options) (*incoming, *net.UDPAddr, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		buf, src, err := conn.Recv(deadline)
 		if err != nil {
 			return nil, nil, err
 		}
-		pairs, ec, err := decodeAny(family, buf, proto)
+		pairs, ec, err := decodeAny(family, buf, proto, opts)
 		if err != nil {
-			if verbosity >= 1 {
+			if opts.Verbosity >= 1 {
 				fmt.Fprintf(os.Stderr, "dhcpdbg: skipping malformed packet: %v\n", err)
 			}
 			continue
@@ -280,9 +284,9 @@ func waitForReply(conn sock.Conn, timeout time.Duration, sent []byte, family Fam
 
 // decodeAny dispatches to the right wire package and computes the exit-code
 // per the spec: NAK / non-Success DHCPv6 status -> non-zero.
-func decodeAny(family Family, buf []byte, proto *dict.Protocol) ([]attrs.Pair, int, error) {
+func decodeAny(family Family, buf []byte, proto *dict.Protocol, opts Options) ([]attrs.Pair, int, error) {
 	if family == V4 {
-		pkt, err := wire4.Decode(buf, proto)
+		pkt, err := wire4.Decode(buf, proto, opts.DecodeOption43)
 		if err != nil {
 			return nil, 0, err
 		}

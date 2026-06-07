@@ -62,6 +62,13 @@ func Encode(list []attrs.Pair, proto *dict.Protocol) ([]byte, error) {
 	var options []attrs.Pair
 	var msgType uint8
 	for _, p := range list {
+		// Decoded-Option-43 lives in the FR-internal namespace but the user
+		// addresses it like a real option: peel it off ahead of the Internal
+		// branch so encodeOptions can rewrite its code from 276 to 43.
+		if p.Attr != nil && p.Attr.Name == "Decoded-Option-43" {
+			options = append(options, p)
+			continue
+		}
 		if p.Attr.Internal {
 			if err := hdr.absorb(p); err != nil {
 				return nil, err
@@ -131,7 +138,13 @@ func Encode(list []attrs.Pair, proto *dict.Protocol) ([]byte, error) {
 // Decode parses a DHCPv4 packet into a Pair list keyed against proto. It
 // surfaces the BOOTP-header fields as pseudo-attrs (the "internal" namespace)
 // so output round-trips back through Encode.
-func Decode(raw []byte, proto *dict.Protocol) (*Packet, error) {
+//
+// opt43Vendor is an optional vendor hint for decoding option 43
+// (Vendor-Specific-Information). When non-empty and the dictionary has a
+// Decoded-Option-43.<vendor> sub-tree, the option-43 payload is walked as
+// 1/1 sub-TLVs against that vendor's Children and surfaced as nested pairs.
+// When empty, option 43 stays opaque (the default).
+func Decode(raw []byte, proto *dict.Protocol, opt43Vendor string) (*Packet, error) {
 	if len(raw) < 240 {
 		return nil, fmt.Errorf("dhcpv4: short packet (%d octets)", len(raw))
 	}
@@ -251,6 +264,16 @@ func Decode(raw []byte, proto *dict.Protocol) (*Packet, error) {
 			}
 			pkt.Pairs = append(pkt.Pairs, pairs...)
 			continue
+		case "Vendor-Specific-Options":
+			// Option 43: by default opaque. With a hint, walk the bytes
+			// against Decoded-Option-43.<hint>'s 1/1 TLV tree.
+			if opt43Vendor != "" {
+				if wrapped, err := decodeOption43(proto, opt43Vendor, a.data); err == nil && wrapped != nil {
+					pkt.Pairs = append(pkt.Pairs, *wrapped)
+					continue
+				}
+				// Fall through to opaque-octets emission on error.
+			}
 		}
 		vs, err := decodeOption(da, a.data)
 		if err != nil {

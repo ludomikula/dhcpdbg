@@ -57,7 +57,7 @@ func TestRoundTripDiscover(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	pkt, err := Decode(wire, proto)
+	pkt, err := Decode(wire, proto, "")
 	if err != nil {
 		t.Fatalf("Decode: %v", err)
 	}

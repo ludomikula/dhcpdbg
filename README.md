@@ -23,6 +23,7 @@ SOLICIT the next.
 - [CLI synopsis](#cli-synopsis)
 - [Input format](#input-format)
   - [Custom dictionaries](#custom-dictionaries)
+    - [Mapping DHCPv4 option 43 to a custom dictionary](#mapping-dhcpv4-option-43-to-a-custom-dictionary)
 - [Output format](#output-format)
 - [Exit codes](#exit-codes)
 - [Examples](#examples)
@@ -165,6 +166,7 @@ dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
         [--socket udp|raw] [--mode request|listen]
         [-r RETRIES] [-T TIMEOUT] [-f FILE] [-x | -xx]
         [--dict PATH ...] [--dict-replace]
+        [--decode-option-43 VENDOR]
 ```
 
 | Flag | Meaning |
@@ -182,6 +184,7 @@ dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
 | `-xx`              | Very verbose: also dump the raw packet hex. |
 | `--dict PATH`      | Extra FreeRADIUS-syntax dictionary file or directory to layer on top of the embedded tree. Repeatable. See [Custom dictionaries](#custom-dictionaries). |
 | `--dict-replace`   | Skip loading the embedded FreeRADIUS dictionaries — only the `--dict` paths are used. The custom tree must then be self-contained. |
+| `--decode-option-43 VENDOR` | When decoding replies, parse DHCPv4 option 43 (Vendor-Specific-Information) as the named vendor block under `Decoded-Option-43`. Without this flag, option 43 stays opaque. See [Custom dictionaries](#custom-dictionaries). |
 | `-h`               | Show help. |
 
 ## Input format
@@ -327,6 +330,94 @@ already available.
 docker run --rm -i -v /etc/dhcpdbg/dicts:/dicts \
        dhcpdbg:local -4 -t discover --dict /dicts < attrs.txt
 ```
+
+#### Mapping DHCPv4 option 43 to a custom dictionary
+
+DHCPv4 option 43 (Vendor-Specific-Information) carries vendor-private
+bytes — the layout differs per vendor, so the embedded codec keeps it
+opaque by default and surfaces it on output as `Vendor-Specific-Options
+= 0x...`. To author and parse it field by field, FreeRADIUS ships a
+helper container called `Decoded-Option-43`: every direct child of
+`Decoded-Option-43` is a *vendor block* whose own children describe the
+sub-option layout. `dhcpdbg` honours that convention end-to-end — you
+can encode by naming the vendor block, and on decode you opt in to the
+same layout with `--decode-option-43 <Vendor>`.
+
+The embedded tree already includes the Broadband-Forum (TR-069) vendor
+block:
+
+```sh
+# encode an option-43 payload using the embedded Broadband-Forum block
+./dhcpdbg -4 -t discover -i eth0 --socket=raw <<EOF
+Client-Hardware-Address = 02:00:00:00:00:01
+Decoded-Option-43.Broadband-Forum.ACS-URL           = "https://acs.example/cpe"
+Decoded-Option-43.Broadband-Forum.Provisioning-Code = "ZONE-A"
+EOF
+
+# decode a reply and surface option 43 as the same dotted form
+./dhcpdbg -4 -t discover -i eth0 --socket=raw \
+          --decode-option-43 Broadband-Forum < attrs.txt
+```
+
+For a vendor not covered by the embedded dictionary, drop a custom
+file that adds a sub-tree under `Decoded-Option-43`. The leading code
+of the vendor block (`276.<N>`) is just an internal slot — pick any
+value that isn't already used; only the *name* and its children
+matter at the user level. Sub-codes are the 1-byte tags that actually
+appear on the wire inside option 43.
+
+```text
+# /etc/dhcpdbg/dictionary.acme
+# Acme CPE option-43 layout (sub-codes match the vendor's spec sheet).
+ATTRIBUTE	Acme						276.42	tlv
+ATTRIBUTE	Image-Server					.1	ipaddr
+ATTRIBUTE	Image-Path					.2	string
+ATTRIBUTE	Provisioning-Code				.3	string
+```
+
+End-to-end with that dictionary:
+
+```sh
+# Build a DISCOVER carrying an Acme option-43 payload.
+./dhcpdbg -4 -t discover -i eth0 --socket=raw \
+          --dict /etc/dhcpdbg/dictionary.acme <<EOF
+Client-Hardware-Address = 02:00:00:00:00:01
+Decoded-Option-43.Acme.Image-Server      = 198.51.100.7
+Decoded-Option-43.Acme.Image-Path        = "/boot/cpe.img"
+Decoded-Option-43.Acme.Provisioning-Code = "ZONE-A"
+EOF
+```
+
+The wire-form payload of option 43 here is `01 04 c6 33 64 07  02 0d
+2f 62 6f 6f 74 2f 63 70 65 2e 69 6d 67  03 06 5a 4f 4e 45 2d 41` —
+three 1-byte-code / 1-byte-length sub-TLVs concatenated together,
+exactly matching what most ACSes parse out of the option.
+
+The reply, decoded with the matching hint, comes back in the same
+dotted form:
+
+```sh
+./dhcpdbg -4 -t discover -i eth0 --socket=raw \
+          --dict /etc/dhcpdbg/dictionary.acme \
+          --decode-option-43 Acme < attrs.txt
+# Decoded-Option-43.Acme.Image-Server      = 198.51.100.7
+# Decoded-Option-43.Acme.Image-Path        = "/boot/cpe.img"
+# Decoded-Option-43.Acme.Provisioning-Code = "ZONE-A"
+```
+
+A few practical rules to keep in mind:
+
+- A single record can hold **at most one** vendor block under
+  `Decoded-Option-43`. Option 43 has no PEN (compare with options 124
+  / 125), so mixing two vendors in one packet would silently truncate
+  one side. `dhcpdbg` refuses with an explanatory error.
+- Without `--decode-option-43`, replies stay opaque
+  (`Vendor-Specific-Options = 0x...`). The flag is an *opt-in* hint —
+  it doesn't change packets you send, only how received packets are
+  parsed.
+- The hint must name a real child of `Decoded-Option-43` in the loaded
+  protocol. An unknown vendor name silently falls through to opaque
+  octets, so legacy traces still parse without changes.
 
 ## Output format
 
@@ -859,11 +950,14 @@ When running from the container, pass `--cap-add NET_BIND_SERVICE` (and
   `User-Class.Value` — `MEMBER ... octets length=uint16,array`) accept a
   single entry per top-level option; pass multiple values directly as a
   single octets blob if you need more than one.
-- **DHCPv4 option 43** (Vendor-Specific-Information) still passes through
-  as opaque octets — its inner format is vendor-private, so the encoder /
-  decoder has no canonical structure to use. Options 82 (Relay-Agent-
-  Information), 124 (V-I Vendor Class), and 125 (V-I Vendor-Specific) all
-  get field-by-field encoding via the structured codec.
+- **DHCPv4 option 43** (Vendor-Specific-Information) is opaque on the
+  wire because the inner format is vendor-private, but you can author
+  and parse it field by field through the FreeRADIUS `Decoded-Option-43`
+  convention. The embedded tree already ships the Broadband-Forum (TR-069)
+  layout; adding more vendors is a short `dictionary.<vendor>` you point
+  at with `--dict`, and the corresponding `--decode-option-43 <vendor>`
+  flag opts decoded replies into the same structured form. See
+  [Mapping DHCPv4 option 43 to a custom dictionary](#mapping-dhcpv4-option-43-to-a-custom-dictionary).
 - **Raw mode is Linux-only.** Builds on other platforms compile the
   stubbed implementation, which fails at runtime with an explanatory
   message. UDP mode works everywhere.

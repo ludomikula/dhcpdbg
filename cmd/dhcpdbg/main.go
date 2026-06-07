@@ -35,6 +35,7 @@ func main() {
 		x           = flag.Bool("x", false, "verbose output (-xx for hex dump)")
 		xx          = flag.Bool("xx", false, "very verbose (hex dump)")
 		dictReplace = flag.Bool("dict-replace", false, "skip embedded dictionaries; only load --dict paths")
+		decOpt43    = flag.String("decode-option-43", "", "vendor name (under Decoded-Option-43) used to parse option 43 payloads")
 		showHelp    = flag.Bool("h", false, "show this help")
 	)
 	var dictPaths stringSlice
@@ -99,18 +100,19 @@ func main() {
 	}
 
 	rc := cli.Run(cli.Options{
-		Family:      family,
-		Mode:        mode,
-		SockMode:    sm,
-		MsgTypeName: *msgType,
-		Server:      *server,
-		Iface:       *iface,
-		Retries:     *retries,
-		Timeout:     timeout,
-		InputPath:   *inputPath,
-		Verbosity:   verbosity,
-		DictPaths:   []string(dictPaths),
-		DictReplace: *dictReplace,
+		Family:         family,
+		Mode:           mode,
+		SockMode:       sm,
+		MsgTypeName:    *msgType,
+		Server:         *server,
+		Iface:          *iface,
+		Retries:        *retries,
+		Timeout:        timeout,
+		InputPath:      *inputPath,
+		Verbosity:      verbosity,
+		DictPaths:      []string(dictPaths),
+		DictReplace:    *dictReplace,
+		DecodeOption43: *decOpt43,
 	})
 	os.Exit(rc)
 }
@@ -123,6 +125,7 @@ Usage:
           [--socket udp|raw] [--mode request|listen]
           [-r RETRIES] [-T TIMEOUT] [-f FILE] [-x | -xx]
           [--dict PATH ...] [--dict-replace]
+          [--decode-option-43 VENDOR]
 
 Examples:
   dhcpdbg -4 -t discover -i eth0 --socket=raw -s 255.255.255.255 < attrs.txt

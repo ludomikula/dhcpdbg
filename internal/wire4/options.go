@@ -24,6 +24,26 @@ func encodeOptions(out []byte, list []attrs.Pair) ([]byte, error) {
 	order := []uint8{}
 
 	for _, p := range list {
+		// Decoded-Option-43 is a synthetic alias for the on-wire option 43
+		// (Vendor-Specific-Information): the user provides field-by-field
+		// content under a vendor namespace and the encoder produces inner
+		// 1/1 TLVs. We handle it first because Decoded-Option-43 lives in
+		// the FR internal namespace (flagged Internal) and would otherwise
+		// be skipped below.
+		if p.Attr.Name == "Decoded-Option-43" {
+			b, err := encodeDecodedOption43(p.Value)
+			if err != nil {
+				return nil, fmt.Errorf("Decoded-Option-43: %v", err)
+			}
+			g, ok := groups[option43Code]
+			if !ok {
+				g = &group{code: option43Code}
+				groups[option43Code] = g
+				order = append(order, option43Code)
+			}
+			g.data = append(g.data, b...)
+			continue
+		}
 		if p.Attr.Internal {
 			continue
 		}
