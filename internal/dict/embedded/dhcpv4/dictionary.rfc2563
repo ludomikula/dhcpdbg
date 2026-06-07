@@ -1,0 +1,15 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: ce3fb6fb1f6bce1f3b72b39323b52de3abc6f16c $
+##############################################################################
+#
+#  RFC2563 - DHCP Option to Disable Stateless Auto-Configuration in IPv4
+#            Clients
+#
+#  $Id: ce3fb6fb1f6bce1f3b72b39323b52de3abc6f16c $
+#
+##############################################################################
+
+# DHCP Auto-Configuration
+ATTRIBUTE	Auto-Config				116	bool

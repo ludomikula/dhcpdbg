@@ -1,0 +1,21 @@
+# -*- text -*-
+# Copyright (C) 2025 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 9c5921554021a3676f7128440dd3cdb081b6dec1 $
+##############################################################################
+#
+#  RFC 6355 - Definition of the UUID-Based DHCPv6 Unique Identifier (DUID-UUID)
+#
+#  $Id: 9c5921554021a3676f7128440dd3cdb081b6dec1 $
+#
+##############################################################################
+
+BEGIN Client-ID.Value
+ATTRIBUTE	UUID					4	struct
+MEMBER		Value					octets[16]
+END Client-ID.Value
+
+BEGIN Server-ID.Value
+ATTRIBUTE	UUID					4	struct
+MEMBER		Value					octets[16]
+END Server-ID.Value

@@ -1,0 +1,30 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: cfdd01b57aa870ce396fc7439b8aeebd71b3e70f $
+##############################################################################
+#
+#  RFC 6607 - Virtual Subnet Selection Options for DHCPv4 and DHCPv6
+#
+#  $Id: cfdd01b57aa870ce396fc7439b8aeebd71b3e70f $
+#
+##############################################################################
+
+ATTRIBUTE	Virtual-Subnet-Selection		68	struct
+MEMBER		Type					uint8 key
+MEMBER		Information				union key=Type
+
+BEGIN Virtual-Subnet-Selection.Information
+
+ATTRIBUTE	NVT-Ascii-VPN				0	struct
+MEMBER		Identifier				string
+
+ATTRIBUTE	VPN					1	struct
+MEMBER		ID					octets[7]
+
+END Virtual-Subnet-Selection.Information
+
+#
+#  Not a struct, because there must not be any data after the key
+#
+VALUE  Type                            Global-VPN              255

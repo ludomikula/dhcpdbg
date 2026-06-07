@@ -1,0 +1,14 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: aad42825268c21fcc81b288fe86f801ac64154c8 $
+##############################################################################
+#
+#  RFC 5223 - Discovering Location-to-Service Translation (LoST) Servers Using the
+#             Dynamic Host Configuration Protocol (DHCP)
+#
+#  $Id: aad42825268c21fcc81b288fe86f801ac64154c8 $
+#
+##############################################################################
+
+ATTRIBUTE	LoST					51	string dns_label

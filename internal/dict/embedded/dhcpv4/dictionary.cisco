@@ -1,0 +1,12 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 29e8c801dc0b89edff4f830eed96b773c4ba2f58 $
+
+VENDOR		Cisco				9
+
+BEGIN-VENDOR	Cisco
+
+ATTRIBUTE	Indirect-Image-Filename			5	string
+
+END-VENDOR	Cisco

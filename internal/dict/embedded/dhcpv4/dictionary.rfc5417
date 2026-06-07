@@ -1,0 +1,14 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 523fe33677cafa9224246bca2de1837475ae0db2 $
+##############################################################################
+#
+#  RFC5417 - Control And Provisioning of Wireless Access Points (CAPWAP)
+#            Access Controller DHCP Option
+#
+#  $Id: 523fe33677cafa9224246bca2de1837475ae0db2 $
+#
+##############################################################################
+
+ATTRIBUTE	CAPWAP-AC-IPv4-Address			138	ipaddr array

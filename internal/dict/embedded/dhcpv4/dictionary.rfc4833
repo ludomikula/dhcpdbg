@@ -1,0 +1,14 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 093d627cee7ac78c06c2e0f482ebed9848dc1e9f $
+##############################################################################
+#
+#  RFC4833 - Timezone Options for DHCP
+#
+#  $Id: 093d627cee7ac78c06c2e0f482ebed9848dc1e9f $
+#
+##############################################################################
+
+ATTRIBUTE	Timezone-Posix				100	string
+ATTRIBUTE	Timezone-Database			101	string

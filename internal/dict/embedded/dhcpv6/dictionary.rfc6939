@@ -1,0 +1,145 @@
+# -*- text -*-
+# Copyright (C) 2025 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 98e3599409a278e4147d67ea6eef4d145125335c $
+##############################################################################
+#
+#  RFC 6939 - Client Link-Layer Address Option
+#
+#  $Id: 98e3599409a278e4147d67ea6eef4d145125335c $
+#
+##############################################################################
+
+ATTRIBUTE	Client-Link-Layer			79	struct
+MEMBER		Type					uint16 key
+MEMBER		Address					union	key=Type
+
+BEGIN Client-Link-Layer.Address
+
+ATTRIBUTE	Ethernet				1	struct
+MEMBER		Address					ether
+
+ATTRIBUTE	Experimental-Ethernet			2	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	AX_25					3	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Proteon-Token-Ring			4	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Chaos					5	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	IEEE-802				6	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Arcnet					7	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Hyperchannel				8	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Lanstar					9	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Autonet-Short-Address			10	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	LocalTalk				11	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	LocalNet				12	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Ultra-Link				13	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	SMDS					14	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Frame-Relay				15	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	ATM-16					16	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	HDLC					17	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Fibre-Channel				18	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	ATM-19					19	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Serial-Line				20	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	ATM-21					21	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	MIL-STD-188-220				22	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Metricom				23	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	IEEE-1394				24	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	MAPOS					25	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Twinaxial				26	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	EUI-64					27	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	HIPARP					28	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	IP-Over-ISO-7816-3			29	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	ARPSec					30	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	IPSec-Tunnel				31	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Infiniband				32	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	CAI-TIA-102				33	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Wiegand-Interface			34	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	Pure-IP					35	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	HW-EXP1					36	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	HFI					37	struct
+MEMBER		Address					octets
+
+#
+#	Unassigned 38-255
+#
+
+ATTRIBUTE	HW_EXP2					256	struct
+MEMBER		Address					octets
+
+ATTRIBUTE	AEthernet				257	struct
+MEMBER		Address					octets
+
+#
+#	Unassigned	258-65534
+#	Reserved	65535
+#
+
+END Client-Link-Layer.Address

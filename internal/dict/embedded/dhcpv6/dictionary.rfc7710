@@ -1,0 +1,13 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 96ce52b989cdf4e5b24d8e12d433f91cf502e408 $
+##############################################################################
+#
+#  RFC 7710 - Captive-Portal Identification Using DHCP or Router Advertisements (RAs)
+#
+#  $Id: 96ce52b989cdf4e5b24d8e12d433f91cf502e408 $
+#
+##############################################################################
+
+ATTRIBUTE	Captive-Portal-URI			103	string

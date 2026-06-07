@@ -1,0 +1,13 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 909dda88b4b929bff33ddd2b19a903db358524c2 $
+##############################################################################
+#
+#  RFC 4075 - Simple Network Time Protocol (SNTP) Configuration Option for DHCPv6
+#
+#  $Id: 909dda88b4b929bff33ddd2b19a903db358524c2 $
+#
+##############################################################################
+
+ATTRIBUTE	SNTP-Servers				31	ipv6addr array

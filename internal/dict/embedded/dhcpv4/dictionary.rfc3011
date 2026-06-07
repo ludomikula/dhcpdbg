@@ -1,0 +1,14 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: d26eb11b49593bbfdd7f76be824e958749385db8 $
+##############################################################################
+#
+#  RFC3011 - The IPv4 Subnet Selection Option for DHCP
+#
+#  $Id: d26eb11b49593bbfdd7f76be824e958749385db8 $
+#
+##############################################################################
+
+# Subnet Selection Option
+ATTRIBUTE	Subnet-Selection-Option			118	ipaddr

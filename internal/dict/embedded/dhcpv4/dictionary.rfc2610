@@ -1,0 +1,21 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 1fa7ad2f43a40ce3c64875379c4613950be5d1f0 $
+##############################################################################
+#
+#  RFC2610 - DHCP Options for Service Location Protocol
+#
+#  $Id: 1fa7ad2f43a40ce3c64875379c4613950be5d1f0 $
+#
+##############################################################################
+
+# directory agent information
+ATTRIBUTE	Directory-Agent				78	struct
+MEMBER		Mandatory				uint8
+MEMBER		Agent					ipaddr	array
+
+# service location agent scope
+ATTRIBUTE	Service-Scope				79	struct
+MEMBER		Mandatory				uint8
+MEMBER		Scope-List				string # space-separated set of strings

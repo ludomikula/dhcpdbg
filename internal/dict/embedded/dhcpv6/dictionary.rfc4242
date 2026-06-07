@@ -1,0 +1,14 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 3893d852d39c2509515649335504a0b12990a36b $
+##############################################################################
+#
+#  RFC 4242 - Information Refresh Time Option for
+#	      Dynamic Host Configuration Protocol for IPv6 (DHCPv6)
+#
+#  $Id: 3893d852d39c2509515649335504a0b12990a36b $
+#
+##############################################################################
+
+ATTRIBUTE	Information-Refresh-Time		32	uint32

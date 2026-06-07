@@ -1,0 +1,4 @@
+/bin/
+/dhcpdbg
+*.pcap
+*.out

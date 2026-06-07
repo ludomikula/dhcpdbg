@@ -1,0 +1,16 @@
+# -*- text -*-
+# Copyright (C) 2025 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: f9626e4d24f116512dd171f791ce6adb1bdafa0b $
+##############################################################################
+#
+#  RFC8910 -  Captive-Portal Identification in DHCP and Router Advertisements (RAs)
+#
+#  $Id: f9626e4d24f116512dd171f791ce6adb1bdafa0b $
+#
+##############################################################################
+
+#
+#  Also as URL in RFC3579.
+#
+ATTRIBUTE	Captive-Portal				114	octets

@@ -1,0 +1,13 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: ed67c01543b262b00bc847df33f6b66e453b275e $
+##############################################################################
+#
+#  RFC 7037 - RADIUS Option for the DHCPv6 Relay Agent
+#
+#  $Id: ed67c01543b262b00bc847df33f6b66e453b275e $
+#
+##############################################################################
+
+ATTRIBUTE	RADIUS					81	group ref=@RADIUS

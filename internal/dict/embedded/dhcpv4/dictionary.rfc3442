@@ -1,0 +1,17 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 38057a74c5bd90a6a741e77d47e65b8465167049 $
+##############################################################################
+#
+#  RFC3442 - The Classless Static Route Option for DHCPv4
+#
+#  $Id: 38057a74c5bd90a6a741e77d47e65b8465167049 $
+#
+##############################################################################
+
+ATTRIBUTE	Classless-Static-Route			121	struct
+MEMBER		Destination-Descriptor			struct	array
+MEMBER		Subnet					ipv4prefix prefix=bits
+MEMBER		Router-IP-Address			ipv4addr
+

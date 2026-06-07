@@ -1,0 +1,15 @@
+# -*- text -*-
+# Copyright (C) 2022 The FreeRADIUS Server project and contributors
+# This work is licensed under CC-BY version 4.0 https://creativecommons.org/licenses/by/4.0
+# Version $Id: 4f8ddf6e5158024968ffc59e67926adc7cb3f2cb $
+##############################################################################
+#
+#  RFC4039 - Rapid Commit Option for the Dynamic Host Configuration Protocol
+#            version 4 (DHCPv4)
+#
+#  $Id: 4f8ddf6e5158024968ffc59e67926adc7cb3f2cb $
+#
+##############################################################################
+
+# Rapid Commit
+ATTRIBUTE	Rapid-Commit				80	bool		exists
