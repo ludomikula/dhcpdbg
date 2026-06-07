@@ -63,6 +63,7 @@ type parser struct {
 	nsStack        []*Attr   // BEGIN Foo.Bar / END Foo.Bar — current "struct" context
 	flagsInternal  bool      // FLAGS internal (until next FLAGS line or EOF)
 	lastAttr       *Attr     // last ATTRIBUTE seen — used by `ATTRIBUTE .Sub` relative form
+	lastContainer  *Attr     // last container ATTRIBUTE (tlv/vsa/struct/group/union)
 
 	// currentStruct is the most recent struct-typed ATTRIBUTE — subsequent
 	// MEMBER lines append to its Members. Reset on every new ATTRIBUTE
@@ -248,6 +249,22 @@ func (p *parser) handleBegin(fields []string) error {
 	return nil
 }
 
+// parentForNested resolves the parent attribute of a sub-attribute. For
+// "82.10" style ATTRIBUTEs parentCode is 82; for ".1" style ATTRIBUTEs we
+// fall back to the last ATTRIBUTE seen with a matching code.
+func (p *parser) parentForNested(parentCode uint32) *Attr {
+	if p.proto == nil {
+		return nil
+	}
+	if a, ok := p.proto.AttrByCode(parentCode); ok {
+		return a
+	}
+	if p.lastAttr != nil && (p.lastAttr.Code == parentCode || parentCode == 0) {
+		return p.lastAttr
+	}
+	return nil
+}
+
 // findDiscriminator looks for the union key MEMBER referenced by the
 // `BEGIN <parent>.<member>` qualifier. Returns nil if the path doesn't
 // resolve — the parser continues, just doesn't auto-populate enums.
@@ -333,7 +350,7 @@ func (p *parser) handleAttribute(fields []string) error {
 		flagsTok = strings.Join(fields[4:], " ")
 	}
 
-	code, vendorOverride, isNested, err := parseCodeSpec(codeSpec, p.lastAttr)
+	code, parentCode, vendorOverride, isNested, err := parseCodeSpec(codeSpec, p.lastContainer)
 	if err != nil {
 		return err
 	}
@@ -377,6 +394,18 @@ func (p *parser) handleAttribute(fields []string) error {
 				disc.EnumByValue[uint64(code)] = name
 			}
 		}
+		// Link this sub-attribute into its parent's Children map so TLV
+		// containers (option 82 Relay-Agent-Information, FR's
+		// Decoded-Option-43) can resolve sub-options by name and by sub-code.
+		if isNested {
+			parent := p.parentForNested(parentCode)
+			if parent != nil {
+				if parent.Children == nil {
+					parent.Children = make(map[uint32]*Attr)
+				}
+				parent.Children[code] = a
+			}
+		}
 	} else {
 		if err := p.proto.addAttr(a); err != nil {
 			return err
@@ -389,6 +418,16 @@ func (p *parser) handleAttribute(fields []string) error {
 		p.currentStruct = a
 	} else {
 		p.currentStruct = nil
+	}
+	// Update lastContainer so subsequent `.N` form ATTRIBUTEs nest under
+	// this attribute. Only container-typed ATTRIBUTEs take this slot —
+	// otherwise a leaf attribute (e.g. Circuit-Id `.1 octets` under option
+	// 82) would become the parent of the next sibling `.N` line.
+	if !isNested && !nestedByNs {
+		switch a.Type {
+		case TypeTLV, TypeVSA, TypeStruct, TypeUnion, TypeGroup:
+			p.lastContainer = a
+		}
 	}
 	p.lastMember = nil
 	return nil
@@ -455,37 +494,49 @@ func (p *parser) handleMember(fields []string) error {
 }
 
 // parseCodeSpec handles `<num>`, `<num>.<num>...`, and bare `.<num>` forms.
-// Returns (code, vendor-override, nested, err). "Nested" is true for any
-// dotted or relative form — the attribute lives inside a parent TLV / struct
-// namespace and must NOT be added to the protocol's top-level code map.
+// Returns (code, parentCode, vendor-override, nested, err). "Nested" is true
+// for any dotted or relative form — the attribute lives inside a parent TLV
+// / struct namespace and must NOT be added to the protocol's top-level code
+// map. ParentCode is 0 when the spec is unambiguous (`.N` form depends on
+// the caller's `last` attribute and is returned as that attribute's code).
 //
-//   - "53"        -> (53, 0, false, nil)     top-level option
-//   - "276.1"     -> (1,  0, true,  nil)     sub-option 1 inside option 276
-//   - ".1"        -> (1,  0, true,  nil)     sub-option 1 of lastAttr
-func parseCodeSpec(spec string, last *Attr) (uint32, uint32, bool, error) {
+//   - "53"        -> (53, 0,  0, false, nil)   top-level option
+//   - "276.1"     -> (1,  276, 0, true,  nil)  sub-option 1 inside option 276
+//   - ".1"        -> (1,  last.Code, 0, true, nil)  relative to lastAttr
+func parseCodeSpec(spec string, last *Attr) (uint32, uint32, uint32, bool, error) {
 	if spec == "" {
-		return 0, 0, false, fmt.Errorf("empty code spec")
+		return 0, 0, 0, false, fmt.Errorf("empty code spec")
 	}
 	if spec[0] == '.' {
 		n, err := strconv.ParseUint(spec[1:], 0, 32)
 		if err != nil {
-			return 0, 0, false, fmt.Errorf("bad relative code %q", spec)
+			return 0, 0, 0, false, fmt.Errorf("bad relative code %q", spec)
 		}
-		return uint32(n), 0, true, nil
+		var parent uint32
+		if last != nil {
+			parent = last.Code
+		}
+		return uint32(n), parent, 0, true, nil
 	}
 	if i := strings.LastIndexByte(spec, '.'); i >= 0 {
+		// Leading segment is the parent code (may itself be dotted further
+		// up — we only model one level here, which is enough for DHCPv4
+		// option 82 sub-options and FR's Decoded-Option-43 children).
+		parent, perr := strconv.ParseUint(spec[:strings.IndexByte(spec, '.')], 0, 32)
 		n, err := strconv.ParseUint(spec[i+1:], 0, 32)
 		if err != nil {
-			return 0, 0, false, fmt.Errorf("bad dotted code %q", spec)
+			return 0, 0, 0, false, fmt.Errorf("bad dotted code %q", spec)
 		}
-		return uint32(n), 0, true, nil
+		if perr != nil {
+			return uint32(n), 0, 0, true, nil
+		}
+		return uint32(n), uint32(parent), 0, true, nil
 	}
 	n, err := strconv.ParseUint(spec, 0, 32)
 	if err != nil {
-		return 0, 0, false, fmt.Errorf("bad code %q", spec)
+		return 0, 0, 0, false, fmt.Errorf("bad code %q", spec)
 	}
-	_ = last
-	return uint32(n), 0, false, nil
+	return uint32(n), 0, 0, false, nil
 }
 
 // parseFlags walks an ATTRIBUTE's flag tail. Recognised forms:

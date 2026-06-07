@@ -226,6 +226,32 @@ func Decode(raw []byte, proto *dict.Protocol) (*Packet, error) {
 			})
 			continue
 		}
+		// Structured DHCPv4 options: hand-coded decoders feed back into
+		// the dotted-form printer, so listen-mode output round-trips
+		// through ReadList.
+		switch da.Name {
+		case "Relay-Agent-Information":
+			v, err := decodeRelayAgentInfo(da, a.data, proto)
+			if err != nil {
+				return nil, err
+			}
+			pkt.Pairs = append(pkt.Pairs, attrs.Pair{Attr: da, Value: v})
+			continue
+		case "V-I-Vendor-Class":
+			pairs, err := decodeVIVendorClass(a.data, proto)
+			if err != nil {
+				return nil, err
+			}
+			pkt.Pairs = append(pkt.Pairs, pairs...)
+			continue
+		case "V-I-Vendor-Specific":
+			pairs, err := decodeVIVendorSpecific(a.data, proto)
+			if err != nil {
+				return nil, err
+			}
+			pkt.Pairs = append(pkt.Pairs, pairs...)
+			continue
+		}
 		vs, err := decodeOption(da, a.data)
 		if err != nil {
 			return nil, err

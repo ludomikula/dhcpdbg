@@ -85,7 +85,12 @@ func Run(opts Options) int {
 
 func loadProto(f Family) (*dict.Protocol, error) {
 	if f == V4 {
-		return dict.LoadDHCPv4()
+		proto, err := dict.LoadDHCPv4()
+		if err != nil {
+			return nil, err
+		}
+		wire4.SynthesizeStructured(proto)
+		return proto, nil
 	}
 	return dict.LoadDHCPv6()
 }

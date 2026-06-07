@@ -103,20 +103,21 @@ func (rs *recordState) assign(proto *dict.Protocol, path, val string) error {
 	if !ok {
 		return fmt.Errorf("unknown attribute %q", segs[0].name)
 	}
-	if segs[0].hasIndex {
-		// A top-level attribute can repeat (each emits its own option). Use
-		// the index as a "second/third instance" indicator. For simplicity
-		// we always append.
+
+	// Top-level instance key. `V-I-Vendor-Specific[0]` and
+	// `V-I-Vendor-Specific` resolve to the same entry; `[1]` and higher
+	// create new Pairs so an option can carry multiple PEN segments.
+	topKey := segs[0].name
+	if segs[0].hasIndex && segs[0].index > 0 {
+		topKey = fmt.Sprintf("%s[%d]", segs[0].name, segs[0].index)
 	}
 
-	// Find or create the top-level Pair for rootAttr. If the path is a
-	// scalar leaf (single segment) and we already have a non-struct Pair
-	// for this attr, append a new one — matches array semantics.
-	idx, present := rs.topByName[segs[0].name]
+	// Find or create the top-level Pair for rootAttr.
+	idx, present := rs.topByName[topKey]
 	if !present {
 		rs.pairs = append(rs.pairs, Pair{Attr: rootAttr, Value: Value{Type: rootAttr.Type}})
 		idx = len(rs.pairs) - 1
-		rs.topByName[segs[0].name] = idx
+		rs.topByName[topKey] = idx
 	}
 	pair := &rs.pairs[idx]
 
@@ -210,9 +211,53 @@ func walkAndAssign(proto *dict.Protocol, parent *dict.Attr, v *Value, segs []pat
 	case dict.TypeGroup:
 		// We arrived here directly from a top-level group attribute.
 		return walkGroupAndAssign(proto, v, segs, raw, 0)
+	case dict.TypeTLV:
+		// TLV container — look up the next segment in parent.Children, then
+		// either store the leaf value or recurse further.
+		return walkTLVAndAssign(proto, parent, v, segs, raw)
 	default:
 		return fmt.Errorf("%s: cannot descend into a non-struct attribute", parent.Name)
 	}
+}
+
+// walkTLVAndAssign descends through a TLV container's Children map. The
+// container's Value is treated as a group-of-sub-options so the codec can
+// emit the children as code(1)+len(1)+value sub-TLVs (DHCPv4 option 82) or
+// as a vendor-specific structured payload (FR Decoded-Option-43).
+func walkTLVAndAssign(proto *dict.Protocol, parent *dict.Attr, v *Value, segs []pathSeg, raw string) error {
+	if len(segs) == 0 {
+		return fmt.Errorf("%s: TLV requires a sub-attribute name", parent.Name)
+	}
+	seg := segs[0]
+	child, ok := parent.Children[lookupChildCode(parent, seg.name)]
+	if !ok {
+		return fmt.Errorf("%s: no sub-attribute %q", parent.Name, seg.name)
+	}
+	if v.Type != dict.TypeTLV && v.Type != dict.TypeGroup {
+		v.Type = dict.TypeTLV
+	}
+	target := findOrCreateGroupChild(v, child, seg.index)
+	if len(segs) == 1 {
+		leaf, err := Parse(child, raw, proto)
+		if err != nil {
+			return err
+		}
+		target.Value = leaf
+		return nil
+	}
+	return walkAndAssign(proto, child, &target.Value, segs[1:], raw)
+}
+
+// lookupChildCode returns the sub-code for a Children entry by name.
+// Children is keyed by sub-code; we walk it once per lookup which is fine
+// for typical TLV containers (a handful of children).
+func lookupChildCode(parent *dict.Attr, name string) uint32 {
+	for code, c := range parent.Children {
+		if c.Name == name {
+			return code
+		}
+	}
+	return 0
 }
 
 // walkGroupAndAssign resolves the next segment as a protocol-level

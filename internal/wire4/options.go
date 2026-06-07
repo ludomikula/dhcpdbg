@@ -36,7 +36,7 @@ func encodeOptions(out []byte, list []attrs.Pair) ([]byte, error) {
 			continue
 		}
 		code := uint8(p.Attr.Code)
-		b, err := encodeValue(p.Attr, p.Value)
+		b, err := encodeOptionPayload(p)
 		if err != nil {
 			return nil, fmt.Errorf("attr %s: %v", p.Attr.Name, err)
 		}
@@ -73,6 +73,31 @@ func emitOption(out []byte, code uint8, data []byte) []byte {
 			return out
 		}
 	}
+}
+
+// encodeOptionPayload is the per-attribute value-serialisation dispatcher.
+// Structured DHCPv4 options (82 Relay-Agent-Information, 124 V-I Vendor
+// Class, 125 V-I Vendor-Specific) route through their hand-coded codecs in
+// vsa.go / relay.go; everything else falls through to encodeValue's
+// primitive path.
+func encodeOptionPayload(p attrs.Pair) ([]byte, error) {
+	a := p.Attr
+	v := p.Value
+	switch a.Name {
+	case "Relay-Agent-Information":
+		if len(v.Group) > 0 {
+			return encodeRelayAgentInfo(v)
+		}
+	case "V-I-Vendor-Class":
+		if len(v.Members) > 0 {
+			return encodeVIVendorClass(v)
+		}
+	case "V-I-Vendor-Specific":
+		if len(v.Members) > 0 {
+			return encodeVIVendorSpecific(v)
+		}
+	}
+	return encodeValue(a, v)
 }
 
 func encodeValue(a *dict.Attr, v attrs.Value) ([]byte, error) {

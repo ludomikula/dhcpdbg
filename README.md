@@ -391,6 +391,76 @@ sudo ./dhcpdbg -4 --mode=listen -i eth0 > capture.txt
 ./dhcpdbg -4 -t request -s 10.0.0.1 -f capture.txt
 ```
 
+**Forge a Relay-Agent-Information option (option 82) to test server policy
+parsing (RFC 3046):**
+
+```sh
+sudo ./dhcpdbg -4 -t discover -s 10.0.0.1 <<EOF
+Client-Hardware-Address = 02:00:00:00:00:01
+Hostname = "lab-host"
+Relay-Agent-Information.Circuit-Id            = "port=A/2"
+Relay-Agent-Information.Remote-Id             = "modem=001abc002233"
+Relay-Agent-Information.Relay-Link-Selection  = 10.0.0.0
+Relay-Agent-Information.Subscriber-Id         = "premium"
+EOF
+```
+
+Sub-options inside option 82 are 1-byte-code / 1-byte-length TLVs from
+RFC 3046 (`.1` Circuit-Id, `.2` Remote-Id, `.5` Relay-Link-Selection,
+`.6` Subscriber-Id, `.10` Relay-Agent-Flags, `.11` Server-Identifier-
+Override).
+
+**Set a V-I Vendor Class (option 124) per RFC 3925:**
+
+```sh
+sudo ./dhcpdbg -4 -t discover -s 10.0.0.1 <<EOF
+Client-Hardware-Address = 02:00:00:00:00:01
+V-I-Vendor-Class.PEN  = 3561
+V-I-Vendor-Class.Data = "Broadband-CPE"
+EOF
+```
+
+**Multiple Vendor-Class segments in a single option-124 (indexed):**
+
+```sh
+sudo ./dhcpdbg -4 -t discover -s 10.0.0.1 <<EOF
+Client-Hardware-Address = 02:00:00:00:00:01
+V-I-Vendor-Class[0].PEN  = 3561
+V-I-Vendor-Class[0].Data = "Broadband-CPE"
+V-I-Vendor-Class[1].PEN  = 4491
+V-I-Vendor-Class[1].Data = "DOCSIS-3.1"
+EOF
+```
+
+**V-I Vendor-Specific Information (option 125) with named sub-options
+from the vendor's FreeRADIUS dictionary block:**
+
+```sh
+sudo ./dhcpdbg -4 -t discover -s 10.0.0.1 <<EOF
+Client-Hardware-Address = 02:00:00:00:00:01
+V-I-Vendor-Specific.PEN                       = 3561
+V-I-Vendor-Specific.Options.ACS-URL           = "https://acs.example/cpe"
+V-I-Vendor-Specific.Options.Provisioning-Code = "ZONE-A"
+EOF
+```
+
+Sub-options are resolved by name against the protocol's per-vendor table
+(populated from `BEGIN-VENDOR ... END-VENDOR` blocks in the embedded
+dictionaries — ADSL-Forum, CableLabs, Cisco, Genexis, ISC). The encoder
+emits each segment as `PEN(4) + len(1) + sub-TLVs(1/1)` per RFC 3925 §4.
+
+**Multiple PENs in a single option 125:**
+
+```sh
+sudo ./dhcpdbg -4 -t discover -s 10.0.0.1 <<EOF
+Client-Hardware-Address = 02:00:00:00:00:01
+V-I-Vendor-Specific[0].PEN                          = 3561
+V-I-Vendor-Specific[0].Options.ACS-URL              = "https://acs.example/cpe"
+V-I-Vendor-Specific[1].PEN                          = 4491
+V-I-Vendor-Specific[1].Options.TFTP-Server-Addresses = 10.0.0.99
+EOF
+```
+
 ### DHCPv6
 
 **Vanilla SOLICIT (multicast to all-DHCP-relays-and-servers):**
@@ -715,8 +785,11 @@ When running from the container, pass `--cap-add NET_BIND_SERVICE` (and
   `User-Class.Value` — `MEMBER ... octets length=uint16,array`) accept a
   single entry per top-level option; pass multiple values directly as a
   single octets blob if you need more than one.
-- **DHCPv4 vendor sub-options** (option 43) still pass through as opaque
-  octets — the structured codec is currently DHCPv6-only.
+- **DHCPv4 option 43** (Vendor-Specific-Information) still passes through
+  as opaque octets — its inner format is vendor-private, so the encoder /
+  decoder has no canonical structure to use. Options 82 (Relay-Agent-
+  Information), 124 (V-I Vendor Class), and 125 (V-I Vendor-Specific) all
+  get field-by-field encoding via the structured codec.
 - **Raw mode is Linux-only.** Builds on other platforms compile the
   stubbed implementation, which fails at runtime with an explanatory
   message. UDP mode works everywhere.
