@@ -7,28 +7,38 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/ludomikula/dhcpdbg/internal/cli"
 	"github.com/ludomikula/dhcpdbg/internal/sock"
 )
 
+// stringSlice is a flag.Value that accumulates repeated --dict values.
+type stringSlice []string
+
+func (s *stringSlice) String() string     { return strings.Join(*s, ",") }
+func (s *stringSlice) Set(v string) error { *s = append(*s, v); return nil }
+
 func main() {
 	var (
-		v4         = flag.Bool("4", false, "use DHCPv4")
-		v6         = flag.Bool("6", false, "use DHCPv6")
-		msgType    = flag.String("t", "", "message type (e.g. discover, solicit)")
-		server     = flag.String("s", "", "target server [host[:port]]")
-		iface      = flag.String("i", "", "egress interface (required for raw/listen)")
-		sockModeS  = flag.String("socket", "udp", "socket backend: udp|raw")
-		modeS      = flag.String("mode", "request", "operating mode: request|listen")
-		retries    = flag.Int("r", 2, "retries on timeout")
-		timeoutS   = flag.String("T", "3s", "reply timeout (e.g. 2s, 500ms)")
-		inputPath  = flag.String("f", "", "attribute-list input file (default stdin)")
-		x          = flag.Bool("x", false, "verbose output (-xx for hex dump)")
-		xx         = flag.Bool("xx", false, "very verbose (hex dump)")
-		showHelp   = flag.Bool("h", false, "show this help")
+		v4          = flag.Bool("4", false, "use DHCPv4")
+		v6          = flag.Bool("6", false, "use DHCPv6")
+		msgType     = flag.String("t", "", "message type (e.g. discover, solicit)")
+		server      = flag.String("s", "", "target server [host[:port]]")
+		iface       = flag.String("i", "", "egress interface (required for raw/listen)")
+		sockModeS   = flag.String("socket", "udp", "socket backend: udp|raw")
+		modeS       = flag.String("mode", "request", "operating mode: request|listen")
+		retries     = flag.Int("r", 2, "retries on timeout")
+		timeoutS    = flag.String("T", "3s", "reply timeout (e.g. 2s, 500ms)")
+		inputPath   = flag.String("f", "", "attribute-list input file (default stdin)")
+		x           = flag.Bool("x", false, "verbose output (-xx for hex dump)")
+		xx          = flag.Bool("xx", false, "very verbose (hex dump)")
+		dictReplace = flag.Bool("dict-replace", false, "skip embedded dictionaries; only load --dict paths")
+		showHelp    = flag.Bool("h", false, "show this help")
 	)
+	var dictPaths stringSlice
+	flag.Var(&dictPaths, "dict", "extra FreeRADIUS dictionary file or directory (repeatable)")
 	flag.Usage = usage
 	flag.Parse()
 
@@ -99,6 +109,8 @@ func main() {
 		Timeout:     timeout,
 		InputPath:   *inputPath,
 		Verbosity:   verbosity,
+		DictPaths:   []string(dictPaths),
+		DictReplace: *dictReplace,
 	})
 	os.Exit(rc)
 }
@@ -110,6 +122,7 @@ Usage:
   dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
           [--socket udp|raw] [--mode request|listen]
           [-r RETRIES] [-T TIMEOUT] [-f FILE] [-x | -xx]
+          [--dict PATH ...] [--dict-replace]
 
 Examples:
   dhcpdbg -4 -t discover -i eth0 --socket=raw -s 255.255.255.255 < attrs.txt

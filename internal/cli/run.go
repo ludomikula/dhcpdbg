@@ -55,6 +55,15 @@ type Options struct {
 	InputPath  string // "" -> stdin
 	Verbosity  int    // -x / -xx
 
+	// DictPaths are additional FreeRADIUS-syntax dictionary files or
+	// directories layered on top of the embedded defaults. Repeatable via
+	// --dict on the CLI.
+	DictPaths []string
+	// DictReplace skips loading the embedded FreeRADIUS dictionaries —
+	// only the files in DictPaths are loaded. Useful for fully-custom
+	// deployments.
+	DictReplace bool
+
 	Stdout io.Writer
 	Stderr io.Writer
 }
@@ -69,7 +78,7 @@ func Run(opts Options) int {
 		opts.Stderr = os.Stderr
 	}
 
-	proto, err := loadProto(opts.Family)
+	proto, err := loadProto(opts.Family, opts)
 	if err != nil {
 		fmt.Fprintf(opts.Stderr, "dhcpdbg: %v\n", err)
 		return 1
@@ -83,16 +92,23 @@ func Run(opts Options) int {
 	}
 }
 
-func loadProto(f Family) (*dict.Protocol, error) {
+func loadProto(f Family, opts Options) (*dict.Protocol, error) {
+	var dictOpts []dict.LoadOption
+	if len(opts.DictPaths) > 0 {
+		dictOpts = append(dictOpts, dict.WithCustomDicts(opts.DictPaths...))
+	}
+	if opts.DictReplace {
+		dictOpts = append(dictOpts, dict.WithReplaceEmbedded())
+	}
 	if f == V4 {
-		proto, err := dict.LoadDHCPv4()
+		proto, err := dict.LoadDHCPv4(dictOpts...)
 		if err != nil {
 			return nil, err
 		}
 		wire4.SynthesizeStructured(proto)
 		return proto, nil
 	}
-	return dict.LoadDHCPv6()
+	return dict.LoadDHCPv6(dictOpts...)
 }
 
 func runRequest(opts Options, proto *dict.Protocol) int {

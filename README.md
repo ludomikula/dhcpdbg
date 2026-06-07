@@ -22,6 +22,7 @@ SOLICIT the next.
   - [Running](#running)
 - [CLI synopsis](#cli-synopsis)
 - [Input format](#input-format)
+  - [Custom dictionaries](#custom-dictionaries)
 - [Output format](#output-format)
 - [Exit codes](#exit-codes)
 - [Examples](#examples)
@@ -163,6 +164,7 @@ interfaces; raw mode additionally needs `--cap-add NET_RAW`.
 dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
         [--socket udp|raw] [--mode request|listen]
         [-r RETRIES] [-T TIMEOUT] [-f FILE] [-x | -xx]
+        [--dict PATH ...] [--dict-replace]
 ```
 
 | Flag | Meaning |
@@ -178,6 +180,8 @@ dhcpdbg (-4|-6) [-t TYPE] [-s SERVER[:PORT]] [-i IFACE]
 | `-f FILE`          | Read the attribute list from `FILE`. Defaults to stdin. Ignored in listen mode. |
 | `-x`               | Verbose: trace each send / receive on stderr. |
 | `-xx`              | Very verbose: also dump the raw packet hex. |
+| `--dict PATH`      | Extra FreeRADIUS-syntax dictionary file or directory to layer on top of the embedded tree. Repeatable. See [Custom dictionaries](#custom-dictionaries). |
+| `--dict-replace`   | Skip loading the embedded FreeRADIUS dictionaries — only the `--dict` paths are used. The custom tree must then be self-contained. |
 | `-h`               | Show help. |
 
 ## Input format
@@ -252,6 +256,76 @@ S46 containers, vendor-defined sub-options):
 ```text
 Client-ID = 0x00030001020000000001
 IA-NA     = 0x0000000100000e1000001518
+```
+
+### Custom dictionaries
+
+`dhcpdbg` embeds the upstream FreeRADIUS attribute dictionaries, but you
+can layer additional dictionary files on top with `--dict`:
+
+```sh
+dhcpdbg -4 -t discover --dict /etc/dhcpdbg/dictionary.acme < attrs.txt
+```
+
+`--dict` accepts either a single dictionary file or a directory (in which
+case every file whose name starts with `dictionary` is loaded in lex
+order, matching FreeRADIUS convention). It is repeatable, so several
+sources can be stacked:
+
+```sh
+dhcpdbg -4 -t discover \
+        --dict /etc/dhcpdbg/dictionary.acme \
+        --dict /etc/dhcpdbg/local-dicts/ < attrs.txt
+```
+
+Custom files use the same FreeRADIUS v4 dictionary syntax as the embedded
+tree (`ATTRIBUTE`, `VENDOR`, `BEGIN-VENDOR`/`END-VENDOR`, `VALUE`,
+`$INCLUDE`, ...). Because the embedded dictionaries load first, custom
+files only need to add the new bits — declaring a fresh `VENDOR` plus its
+sub-options is enough:
+
+```text
+# /etc/dhcpdbg/dictionary.acme
+VENDOR Acme-Networks 99999
+BEGIN-VENDOR Acme-Networks
+ATTRIBUTE Acme-License-Key 1 string
+ATTRIBUTE Acme-Pool-Tag    2 uint32
+END-VENDOR Acme-Networks
+```
+
+With that loaded you can address the new sub-options by name through the
+V-I Vendor-Specific (option 125) structured input form:
+
+```sh
+dhcpdbg -4 -t discover --dict /etc/dhcpdbg/dictionary.acme <<EOF
+Client-Hardware-Address = 02:00:00:00:00:01
+V-I-Vendor-Specific.PEN                          = 99999
+V-I-Vendor-Specific.Options.Acme-License-Key     = "AB-1234-CD"
+V-I-Vendor-Specific.Options.Acme-Pool-Tag        = 7
+EOF
+```
+
+**Overrides.** Later sources win on name collision, so a custom file can
+redefine an embedded `VALUE`, `ATTRIBUTE`, or `VENDOR`. Duplicates that
+come from the same source are still a hard error.
+
+**`--dict-replace`** turns off the embedded defaults entirely. The
+`--dict` paths then have to ship everything they reference (including
+`BEGIN PROTOCOL DHCPv4 2` / `BEGIN PROTOCOL DHCPv6 3` at the top). Use
+this when you maintain your own complete dictionary tree.
+
+**`$INCLUDE` scope.** `$INCLUDE` directives inside a custom file resolve
+relative to that file's directory within the same source — they do not
+fall back to the embedded tree. Because the embedded dictionaries are
+already loaded by the time custom files are parsed, you typically don't
+need to `$INCLUDE` standard RFC dictionaries: their attributes are
+already available.
+
+**Inside Docker**, mount the dictionary directory:
+
+```sh
+docker run --rm -i -v /etc/dhcpdbg/dicts:/dicts \
+       dhcpdbg:local -4 -t discover --dict /dicts < attrs.txt
 ```
 
 ## Output format

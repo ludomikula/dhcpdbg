@@ -163,6 +163,7 @@ type Attr struct {
 	Flags    AttrFlags
 	Vendor   uint32 // 0 for non-vendor attrs
 	Internal bool   // FLAGS internal — header pseudo-attr, not an option
+	Source   string // dictionary source the attribute came from (for override diagnostics)
 
 	// EnumByName / EnumByValue hold the VALUE statements for this attribute.
 	EnumByName  map[string]uint64
@@ -284,6 +285,11 @@ func (p *Protocol) All() []*Attr {
 }
 
 // addAttr registers a fully-built attribute into the protocol.
+//
+// Cross-source duplicates are tolerated and the new attribute replaces the
+// old one — this is how a custom dictionary loaded after the embedded tree
+// is allowed to override an embedded definition. Intra-source duplicates
+// still error (the dictionary file itself contradicts itself).
 func (p *Protocol) addAttr(a *Attr) error {
 	if a.Vendor != 0 {
 		m := p.ByVendor[a.Vendor]
@@ -292,14 +298,18 @@ func (p *Protocol) addAttr(a *Attr) error {
 			p.ByVendor[a.Vendor] = m
 		}
 		if existing, ok := m[a.Code]; ok && existing.Name != a.Name {
-			return fmt.Errorf("vendor %d: duplicate sub-attr %d (%s vs %s)", a.Vendor, a.Code, existing.Name, a.Name)
+			if existing.Source == a.Source {
+				return fmt.Errorf("vendor %d: duplicate sub-attr %d (%s vs %s)", a.Vendor, a.Code, existing.Name, a.Name)
+			}
 		}
 		m[a.Code] = a
 		p.byName[a.Name] = a
 		return nil
 	}
 	if existing, ok := p.byCode[a.Code]; ok && existing.Name != a.Name && !existing.Internal && !a.Internal {
-		return fmt.Errorf("duplicate attr code %d (%s vs %s)", a.Code, existing.Name, a.Name)
+		if existing.Source == a.Source {
+			return fmt.Errorf("duplicate attr code %d (%s vs %s)", a.Code, existing.Name, a.Name)
+		}
 	}
 	p.byCode[a.Code] = a
 	p.byName[a.Name] = a

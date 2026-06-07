@@ -2,37 +2,84 @@ package dict
 
 import (
 	"bufio"
-	"embed"
 	"fmt"
 	"io"
 	"strconv"
 	"strings"
 )
 
-// dictFS / dictRoot are wired up by embed.go's init().
-var dictFS embed.FS
-var dictRoot string
+// LoadOption configures a Load call. Use WithCustomDicts / WithReplaceEmbedded.
+type LoadOption func(*loadOpts)
 
-// LoadDHCPv4 parses the embedded DHCPv4 protocol tree and returns its
-// Protocol object.
-func LoadDHCPv4() (*Protocol, error) {
-	return loadProtocolRoot("dhcpv4/dictionary")
+type loadOpts struct {
+	customPaths     []string
+	replaceEmbedded bool
 }
 
-// LoadDHCPv6 parses the embedded DHCPv6 protocol tree.
-func LoadDHCPv6() (*Protocol, error) {
-	return loadProtocolRoot("dhcpv6/dictionary")
+// WithCustomDicts adds one or more --dict paths to a Load call. Each path
+// may be a single dictionary file or a directory whose `dictionary*` files
+// will be loaded in lex order. The paths are processed AFTER the embedded
+// tree (unless WithReplaceEmbedded is also passed); later definitions
+// override earlier ones on name collision.
+func WithCustomDicts(paths ...string) LoadOption {
+	return func(o *loadOpts) { o.customPaths = append(o.customPaths, paths...) }
 }
 
-func loadProtocolRoot(relPath string) (*Protocol, error) {
-	p := &parser{
-		proto: nil, // set by BEGIN PROTOCOL
+// WithReplaceEmbedded skips loading the binary's embedded FreeRADIUS
+// dictionary tree. The custom dictionaries supplied via WithCustomDicts
+// must then be self-contained — they need to declare `BEGIN PROTOCOL` and
+// include every attribute they reference.
+func WithReplaceEmbedded() LoadOption { return func(o *loadOpts) { o.replaceEmbedded = true } }
+
+func evalOptions(opts []LoadOption) loadOpts {
+	var o loadOpts
+	for _, opt := range opts {
+		opt(&o)
 	}
-	if err := p.parseFile(relPath); err != nil {
-		return nil, err
+	return o
+}
+
+// LoadDHCPv4 parses the DHCPv4 protocol tree and returns its Protocol object.
+// By default it loads the embedded FreeRADIUS dictionaries; pass options to
+// extend or replace that default.
+func LoadDHCPv4(opts ...LoadOption) (*Protocol, error) {
+	return loadProtocol("dhcpv4/dictionary", opts)
+}
+
+// LoadDHCPv6 parses the DHCPv6 protocol tree. See LoadDHCPv4 for option
+// semantics.
+func LoadDHCPv6(opts ...LoadOption) (*Protocol, error) {
+	return loadProtocol("dhcpv6/dictionary", opts)
+}
+
+func loadProtocol(embeddedRoot string, opts []LoadOption) (*Protocol, error) {
+	o := evalOptions(opts)
+	p := &parser{
+		includedOnce: make(map[string]bool),
+	}
+	if !o.replaceEmbedded {
+		p.source = newEmbeddedSource()
+		if err := p.parseFile(embeddedRoot); err != nil {
+			return nil, err
+		}
+	}
+	for _, path := range o.customPaths {
+		layers, err := expandDictPath(path)
+		if err != nil {
+			return nil, err
+		}
+		for _, layer := range layers {
+			p.source = layer.source
+			// Custom files have their own per-file FLAGS scope; reset
+			// includedOnce so the same name in a different source can be
+			// parsed without colliding.
+			if err := p.parseFile(layer.rootFile); err != nil {
+				return nil, fmt.Errorf("%s: %v", layer.source.Name(), err)
+			}
+		}
 	}
 	if p.proto == nil {
-		return nil, fmt.Errorf("%s: no BEGIN PROTOCOL block found", relPath)
+		return nil, fmt.Errorf("no BEGIN PROTOCOL block found in any loaded dictionary")
 	}
 	// clone=@.X resolution. Server-ID is declared as
 	// `ATTRIBUTE Server-ID 2 struct clone=@.Client-ID` — at this point both
@@ -59,11 +106,12 @@ func loadProtocolRoot(relPath string) (*Protocol, error) {
 type parser struct {
 	proto *Protocol
 
-	vendorStack    []uint32  // BEGIN-VENDOR / END-VENDOR
-	nsStack        []*Attr   // BEGIN Foo.Bar / END Foo.Bar — current "struct" context
-	flagsInternal  bool      // FLAGS internal (until next FLAGS line or EOF)
-	lastAttr       *Attr     // last ATTRIBUTE seen — used by `ATTRIBUTE .Sub` relative form
-	lastContainer  *Attr     // last container ATTRIBUTE (tlv/vsa/struct/group/union)
+	source         dictSource // current file source — swapped per custom layer
+	vendorStack    []uint32   // BEGIN-VENDOR / END-VENDOR
+	nsStack        []*Attr    // BEGIN Foo.Bar / END Foo.Bar — current "struct" context
+	flagsInternal  bool       // FLAGS internal (until next FLAGS line or EOF)
+	lastAttr       *Attr      // last ATTRIBUTE seen — used by `ATTRIBUTE .Sub` relative form
+	lastContainer  *Attr      // last container ATTRIBUTE (tlv/vsa/struct/group/union)
 
 	// currentStruct is the most recent struct-typed ATTRIBUTE — subsequent
 	// MEMBER lines append to its Members. Reset on every new ATTRIBUTE
@@ -90,15 +138,18 @@ func (p *parser) parseFile(relPath string) error {
 	if p.includedOnce == nil {
 		p.includedOnce = make(map[string]bool)
 	}
-	if p.includedOnce[relPath] {
+	// Cycle-detect per (source, file). The same name in two different
+	// sources can be loaded — only the same name in the same source is
+	// suppressed.
+	key := p.source.Name() + "::" + relPath
+	if p.includedOnce[key] {
 		return nil
 	}
-	p.includedOnce[relPath] = true
+	p.includedOnce[key] = true
 
-	full := dictRoot + "/" + relPath
-	f, err := dictFS.Open(full)
+	f, err := p.source.Open(relPath)
 	if err != nil {
-		return fmt.Errorf("open %s: %w", relPath, err)
+		return fmt.Errorf("open %s (%s): %w", relPath, p.source.Name(), err)
 	}
 	defer f.Close()
 	scanner := bufio.NewScanner(f)
@@ -228,6 +279,16 @@ func (p *parser) handleBegin(fields []string) error {
 		num, err := strconv.ParseUint(fields[3], 0, 32)
 		if err != nil {
 			return fmt.Errorf("bad PROTOCOL number %q: %v", fields[3], err)
+		}
+		if p.proto != nil {
+			// Custom file re-declaring the protocol. Allow only if name +
+			// number match — otherwise we'd silently switch which protocol
+			// the parser is extending.
+			if p.proto.Name != fields[2] || p.proto.Code != uint32(num) {
+				return fmt.Errorf("BEGIN PROTOCOL %s %d conflicts with already-loaded %s %d",
+					fields[2], num, p.proto.Name, p.proto.Code)
+			}
+			return nil
 		}
 		p.proto = newProtocol(fields[2], uint32(num))
 		return nil
@@ -369,6 +430,7 @@ func (p *parser) handleAttribute(fields []string) error {
 		Flags:     flags,
 		Internal:  p.flagsInternal,
 		CloneFrom: cloneFrom,
+		Source:    p.sourceName(),
 	}
 	if vendorOverride != 0 {
 		a.Vendor = vendorOverride
@@ -628,6 +690,15 @@ func (p *parser) qualifiedName(member string) string {
 
 func locErr(file string, line int, msg string) error {
 	return fmt.Errorf("%s:%d: %s", file, line, msg)
+}
+
+// sourceName returns the active source's display name, or "" if no source
+// is set (defensive — should not happen in normal use).
+func (p *parser) sourceName() string {
+	if p.source == nil {
+		return ""
+	}
+	return p.source.Name()
 }
 
 // readAllForDebug is a sanity helper used by tests/CLI -xx mode.
